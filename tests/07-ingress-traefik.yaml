@@ -70,9 +70,12 @@ spec:
           command: [sh, -c]
           args:
             - |
+              # k3s names the Service "traefik", RKE2 "rke2-traefik".
               for i in $(seq 1 40); do
-                body=$(curl -fsS -H 'Host: ingress-test.runai.local' http://traefik.kube-system.svc/ 2>/dev/null) || true
-                [ "$body" = ingress-test-ok ] && { echo "PASS: Traefik routed the Ingress (try $i)"; exit 0; }
+                for svc in traefik rke2-traefik; do
+                  body=$(curl -fsS -H 'Host: ingress-test.runai.local' "http://$svc.kube-system.svc/" 2>/dev/null) || true
+                  [ "$body" = ingress-test-ok ] && { echo "PASS: Traefik ($svc) routed the Ingress (try $i)"; exit 0; }
+                done
                 sleep 3
               done
               echo "FAIL: no answer through Traefik for ingress-test.runai.local"; exit 1

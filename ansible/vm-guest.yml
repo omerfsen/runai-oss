@@ -1,26 +1,30 @@
 ---
-# VM track, part 2: Rocky Linux 10.2 prepared for RKE2, then RKE2 itself.
-# The admin kubeconfig lands on the workstation as context rke2-<vm_name>.
+# VM track, part 2: Rocky Linux 10.2 prepared for RKE2 on both VMs, then an
+# RKE2 server on the control-plane VM and an agent on the GPU VM. The admin
+# kubeconfig lands on the workstation as context {{ kube_context }}.
 #
 #   ansible-playbook vm-guest.yml -e @vm.local.yml
-- name: Add the VM to the inventory
-  hosts: workstation
-  gather_facts: false
-  tasks:
-    - name: Add {{ vm_name }}
-      ansible.builtin.add_host:
-        name: "{{ vm_name }}"
-        groups: rocky_guest
-        ansible_host: "{{ vm_ip }}"
-        ansible_user: rocky
-        ansible_ssh_private_key_file: "{{ playbook_dir }}/.keys/{{ vm_name }}_ed25519"
-        ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new
-      changed_when: false
+- name: Add the VMs to the inventory
+  ansible.builtin.import_playbook: vm-inventory.yml
 
-- name: Prepare Rocky Linux and install RKE2
-  hosts: rocky_guest
+- name: Prepare Rocky Linux
+  hosts: rocky_guests
   become: true
   gather_facts: true
   roles:
     - rocky_base
+
+# The server first: the agent needs its join token and API.
+- name: RKE2 server
+  hosts: rke2_server
+  become: true
+  gather_facts: false
+  roles:
+    - rke2
+
+- name: RKE2 agent
+  hosts: rke2_agent
+  become: true
+  gather_facts: false
+  roles:
     - rke2

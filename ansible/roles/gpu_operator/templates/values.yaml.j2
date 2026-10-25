@@ -39,3 +39,15 @@ cdi:
   # Run:ai GPU fractions do not work while the NRI plugin is on (memory-fractions.md),
   # even though RKE2's GPU Operator guide turns it on.
   nriPluginEnabled: false
+{% if system_node_selector | length > 0 %}
+
+# Controllers on the system node; the per-node DaemonSets (driver, toolkit,
+# device plugin, DCGM, NFD worker) still run on the GPU node.
+operator:
+  nodeSelector: {{ system_node_selector | to_json }}
+node-feature-discovery:
+  master:
+    nodeSelector: {{ system_node_selector | to_json }}
+  gc:
+    nodeSelector: {{ system_node_selector | to_json }}
+{% endif %}

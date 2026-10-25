@@ -45,6 +45,7 @@ GPU fractions need GPU Operator 26.7.1, driver r615+ and CUDA 13.4+.
   a README, YAML and a `check.sh` that fails if the feature misbehaves
 - [tests/](tests/): platform tests below Run:ai (GPU, CUDA, TensorFlow,
   PyTorch, TensorRT, GPU metrics, ingress, cert-manager)
+- [docs/ui-access.md](docs/ui-access.md): log in to the Run:ai UI, trust the lab CA
 - [docs/build-log.md](docs/build-log.md): every step, command, failure and fix
 
 ```bash

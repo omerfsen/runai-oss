@@ -147,7 +147,7 @@
     --disk path={{ vm_disk_path }}/{{ vm_name }}.qcow2,format=qcow2,bus=virtio
     --disk path={{ vm_disk_path }}/{{ vm_name }}-seed.iso,device=cdrom
     --network bridge={{ vm_bridge }},model=virtio,mac={{ vm_mac }}
-    {% for id in gpu_pci_ids %}--hostdev {{ id }},address.type=pci {% endfor %}
+    {% for id in vm_hostdevs %}--hostdev {{ id }},address.type=pci {% endfor %}
     --graphics none
     --console pty,target_type=serial
     --osinfo {{ rocky_osinfo }}
@@ -169,15 +169,15 @@
   args: {executable: /bin/bash}
   register: hostdev_unmanaged
   changed_when: "'changed' in hostdev_unmanaged.stdout"
-  when: not ansible_check_mode
+  when: vm_hostdevs | length > 0 and not ansible_check_mode
 
 - name: Set whether the domain starts with the host
   ansible.builtin.command: virsh autostart {{ '' if vm_autostart else '--disable ' }}{{ vm_name }}
   changed_when: false
   when: not ansible_check_mode
 
-# The passthrough gate (gpu_passthrough role) has already proven every GPU
-# function is on vfio-pci, so starting is safe here.
+# For the GPU VM the passthrough gate (gpu_passthrough role) has already
+# proven every GPU function is on vfio-pci, so starting is safe here.
 - name: Start the guest if it is shut off
   ansible.builtin.shell: |
     set -o pipefail

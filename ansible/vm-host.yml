@@ -1,12 +1,13 @@
 ---
-# VM track, part 1: hand the GPU to a KVM guest and create the Rocky Linux
-# 10.2 VM. Runs on the workstation as root.
+# VM track, part 1: hand the GPU to a KVM guest and create the two Rocky
+# Linux 10.2 VMs (CPU control-plane VM + GPU worker VM). Runs on the
+# workstation as root.
 #
 #   ansible-playbook vm-host.yml -e @vm.local.yml
 #
 # In permanent mode the first run writes the vfio-pci config, rebuilds the
-# initrd and stops: reboot the host, run it again, and it creates the VM.
-- name: Hand the GPU to the VM and create it
+# initrd and stops: reboot the host, run it again, and it creates the VMs.
+- name: Hand the GPU to the GPU VM and create both VMs
   hosts: workstation
   become: true
   gather_facts: true
@@ -14,10 +15,36 @@
     - name: Require the local settings
       ansible.builtin.assert:
         that:
-          - vm_ip is defined
-          - not vm_ip.startswith('192.0.2.')
+          - cp_vm_ip is defined and gpu_vm_ip is defined
+          - not cp_vm_ip.startswith('192.0.2.') and not gpu_vm_ip.startswith('192.0.2.')
         fail_msg: Copy vm.example.yml to vm.local.yml, set your network, and pass -e @vm.local.yml.
   roles:
-    - gpu_passthrough
-    - role: rocky_vm
+    - role: gpu_passthrough
+      vars:
+        vm_name: "{{ gpu_vm_name }}"
+  tasks:
+    - name: Create the control-plane VM (no GPU)
+      ansible.builtin.include_role:
+        name: rocky_vm
+      vars:
+        vm_name: "{{ cp_vm_name }}"
+        vm_hostname: "{{ cp_vm_name }}"
+        vm_ip: "{{ cp_vm_ip }}"
+        vm_vcpus: "{{ cp_vm_vcpus }}"
+        vm_memory_mb: "{{ cp_vm_memory_mb }}"
+        vm_disk_gb: "{{ cp_vm_disk_gb }}"
+        vm_hostdevs: []
+      when: gpu_passthrough_mode == 'permanent'
+
+    - name: Create the GPU VM (GPU passed through)
+      ansible.builtin.include_role:
+        name: rocky_vm
+      vars:
+        vm_name: "{{ gpu_vm_name }}"
+        vm_hostname: "{{ gpu_vm_name }}"
+        vm_ip: "{{ gpu_vm_ip }}"
+        vm_vcpus: "{{ gpu_vm_vcpus }}"
+        vm_memory_mb: "{{ gpu_vm_memory_mb }}"
+        vm_disk_gb: "{{ gpu_vm_disk_gb }}"
+        vm_hostdevs: "{{ gpu_pci_ids }}"
       when: gpu_passthrough_mode == 'permanent'

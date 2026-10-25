@@ -1,7 +1,6 @@
 {{ ansible_managed | comment }}
 # Run:ai control plane ({{ runai_version }}), chart runai-oss/control-plane.
-# The admin password is NOT in this file: the role passes it with --set from
-# the RUNAI_ADMIN_PASSWORD environment variable at install time.
+# The admin password is NOT in this file: the role passes it to helm on stdin.
 
 global:
   domain: {{ runai_fqdn }}                  # an FQDN; an IP is not accepted
@@ -16,7 +15,49 @@ global:
     # The certificate comes from a self-signed CA (cert-manager), so every
     # component has to trust it: secret runai-ca-cert, key runai-ca.pem.
     enabled: true
+{% if system_node_selector | length > 0 %}
+  # Required, not just preferred (the chart's default): every control-plane
+  # service on the system node, none on the GPU node.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+{% for key, value in system_node_selector.items() %}
+              - {key: "{{ key }}", operator: In, values: ["{{ value }}"]}
+{% endfor %}
+{% endif %}
 
 tenantsManager:
   config:
     adminUsername: {{ runai_admin_username }}
+{% if system_node_selector | length > 0 %}
+{% set required_affinity %}
+nodeAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    nodeSelectorTerms:
+      - matchExpressions:
+{% for key, value in system_node_selector.items() %}
+          - {key: "{{ key }}", operator: In, values: ["{{ value }}"]}
+{% endfor %}
+{% endset %}
+
+# The third-party subcharts do not read global.affinity (their defaults are a
+# YAML anchor to the chart's own *preferred* affinity), so each gets the
+# required one explicitly. Without this keycloak and thanos-query landed on
+# the GPU node.
+keycloakx:
+  # keycloakx renders this field as a template string.
+  affinity: |
+    {{ required_affinity | indent(4) }}
+postgresql:
+  primary:
+    affinity: {{ required_affinity | from_yaml | to_json }}
+thanos:
+  query:
+    affinity: {{ required_affinity | from_yaml | to_json }}
+  receive:
+    affinity: {{ required_affinity | from_yaml | to_json }}
+nats:
+  affinity: {{ required_affinity | from_yaml | to_json }}
+{% endif %}

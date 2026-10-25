@@ -4,6 +4,12 @@
 # Behind NAT, validation from inside the cluster also needs hairpin NAT on the
 # host for ports 80/443; cert-manager has no setting that replaces it.
 
+- name: Render the values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /tmp/cert-manager-values.yaml
+    mode: "0644"
+
 - name: Read the deployed cert-manager release
   ansible.builtin.command: >-
     helm --kube-context {{ kube_context }} -n cert-manager
@@ -12,10 +18,22 @@
   changed_when: false
   check_mode: false
 
+- name: Read its values
+  ansible.builtin.command: >-
+    helm --kube-context {{ kube_context }} -n cert-manager
+    get values cert-manager -o json
+  register: cm_values
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Run helm only when the chart version or the values differ from what is deployed.
 - name: helm upgrade -i cert-manager {{ cert_manager_version }}
   when: >-
     cm_release.stdout | from_json | selectattr('status', 'equalto', 'deployed')
     | selectattr('chart', 'equalto', 'cert-manager-' ~ cert_manager_version) | list | length == 0
+    or cm_values.rc != 0
+    or (cm_values.stdout | from_json) != (lookup('ansible.builtin.template', 'values.yaml.j2') | from_yaml)
   block:
     - name: Add the Jetstack Helm repo
       ansible.builtin.command: helm repo add jetstack https://charts.jetstack.io --force-update
@@ -27,7 +45,7 @@
         --kube-context {{ kube_context }}
         -n cert-manager --create-namespace
         --version {{ cert_manager_version }}
-        --set crds.enabled=true
+        -f /tmp/cert-manager-values.yaml
         --wait --timeout 5m
       changed_when: true
       when: not ansible_check_mode

@@ -2,7 +2,13 @@
 # Run:ai 3.0 supports Kubernetes 1.35 to 1.37; newest RKE2 in that range.
 rke2_version: v1.37.1+rke2r1
 local_path_version: v0.0.37
-# Where the admin kubeconfig lands on the control node (gitignored), and the
-# context name it gets in ~/.kube/config.
-rke2_kubeconfig: "{{ playbook_dir }}/.keys/{{ vm_name }}.kubeconfig"
-rke2_context: "rke2-{{ vm_name }}"
+# server (control-plane VM) or agent (GPU VM); vm-guest.yml sets it per host.
+rke2_role: server
+rke2_server_ip: ""
+# Run:ai node roles (node-role.kubernetes.io/runai-*), applied with kubectl.
+rke2_node_labels: []
+# The context name in ~/.kube/config and the kubeconfig file (gitignored).
+rke2_context: "{{ kube_context }}"
+rke2_kubeconfig: "{{ playbook_dir }}/.keys/{{ rke2_context }}.kubeconfig"
+# The guest login user (vm-guest.yml sets ansible_user when it adds the VM).
+vm_user: "{{ ansible_user }}"

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")" && source ../lib.sh
 trap 'k delete -f pod.yaml --ignore-not-found --wait=true --timeout=120s >/dev/null' EXIT
 
-total=$(k get nodes -o jsonpath='{.items[0].metadata.labels.nvidia\.com/gpu\.memory}')
+total=$(k get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.labels.nvidia\.com/gpu\.memory}')
 k apply -f pod.yaml >/dev/null
 wait_phase runai-team-a half-gpu Running 300 || { pending_reason runai-team-a half-gpu; exit 1; }
 until line=$(k -n runai-team-a logs half-gpu 2>/dev/null) && [[ -n $line ]]; do sleep 2; done

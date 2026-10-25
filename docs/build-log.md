@@ -593,6 +593,185 @@ Lesson: a reviewer that did not write the code reads the *current* state of
 every file. I had changed the role and the helper an hour apart and every
 test still passed, because the test machine carried state from before.
 
+
+## Step 20: Second track: Rocky Linux 10.2 VM, RKE2, GPU passthrough
+
+k3s is not on Run:ai's support list; RKE2 is. And a VM is closer to a real
+GPU node (and to Proxmox): the node is a machine, not a container, so the GPU
+Operator can install the driver itself. The VM track reuses the earlier SecOps
+lab's KVM design (Ansible + `virt-install` + cloud-init, no Terraform) with
+Rocky Linux 10.2 instead of SLES.
+
+What was checked before writing a line:
+
+| Need | Found |
+|---|---|
+| Newest Rocky 10 cloud image | 10.2, `Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2` + official SHA256 |
+| GPU Operator on Rocky 10 | supported, with Rocky driver containers; `nvcr.io/nvidia/driver:615.71.09-rocky10` exists |
+| RKE2 on EL10 | official installer has an EL10 RPM repo, `rke2-selinux` policy included; Traefik is the default ingress since v1.36 |
+| EL10 quirk | `kernel-modules-extra` needed for `nf_conntrack` (RKE2 requirements page) |
+| osinfo | no `rocky10` entry yet; `rhel10.1` is the same platform |
+
+Playbooks (`ansible/vm-*.yml`, all with `-e @vm.local.yml`; the network
+settings live in that gitignored file, the repo only has `vm.example.yml`):
+
+1. **`vm-host.yml`**: `gpu_passthrough` role (from the SecOps lab, permanent
+   and off modes only; its on-demand mode once froze this host) writes the
+   vfio-pci binding, rebuilds the initrd and stops for a reboot. After the
+   reboot both GPU functions sat on `vfio-pci`; the `rocky_vm` role then built
+   the VM: 16 vCPU, 48 GB, 200 GB disk, UEFI **without Secure Boot** (the
+   operator builds an unsigned driver inside), GPU hostdevs `managed='no'`.
+2. **`vm-guest.yml`**: Rocky prep, RKE2 `v1.37.1+rke2r1` from the EL10 RPMs.
+   dnf pulled a newer kernel with `kernel-modules-extra`; the role rebooted
+   once. SELinux stays Enforcing.
+3. **`vm-cluster.yml`**: GPU Operator v26.7.1 with `driver.enabled=true`. The
+   driver container installed kernel headers for the VM's own kernel,
+   compiled the modules and loaded them: inside the VM, `nvidia-smi` shows the
+   RTX 4080 SUPER on 615.71.09.
+
+All shared roles took a `kube_context` variable (default `k3d-runai`), so the
+same GPU Operator, cert-manager and Run:ai roles, tests and labs serve both
+tracks.
+
+**The platform tests caught two RKE2 differences** (6 of 8 failed at first):
+
+- **No default nvidia runtime.** RKE2 registers the `nvidia` runtime once the
+  operator's toolkit exists, but keeps `runc` as the default. GPU pods ran
+  without the driver: `nvidia-smi: command not found`, `CUDA driver version is
+  insufficient`. Making nvidia the default *before* the toolkit exists would
+  break every pod, so the `rke2` role adds `default-runtime: nvidia` only when
+  `/usr/local/nvidia/toolkit/nvidia-container-runtime` is present, and
+  `vm-cluster.yml` re-applies it after the operator (one RKE2 restart).
+- **Traefik's Service is `rke2-traefik`**, not `traefik`. The ingress test now
+  tries both. On RKE2 Traefik runs as a DaemonSet with hostPorts 80/443, so
+  the VM's address serves ingress directly.
+
+After the fixes: **8/8 platform tests PASS on Rocky + RKE2.**
+
+
+## Step 21: Keep the GPU node for GPU work only
+
+A single node that runs the control plane, Run:ai's ~40 services and the
+GPU workloads is fine for k3d, but it is not how a GPU cluster should look:
+controllers and services eat CPU and memory on the most expensive machine.
+Run:ai has node roles for exactly this:
+
+| Label | For |
+|---|---|
+| `node-role.kubernetes.io/runai-system=true` | Run:ai control plane + cluster services |
+| `node-role.kubernetes.io/runai-gpu-worker=true` | GPU workloads |
+| `node-role.kubernetes.io/runai-cpu-worker=true` | CPU-only workloads |
+
+By default Run:ai only *prefers* system nodes, and
+`clusterConfig.global.nodeAffinity.restrictScheduling` turns the worker roles
+into requirements. So the VM track became two VMs:
+
+| VM | Role | Size |
+|---|---|---|
+| `runai-cp` | RKE2 server; runai-system + runai-cpu-worker | 12 vCPU, 40 GB |
+| `runai-rocky` | RKE2 agent with the GPU; runai-gpu-worker only | 8 vCPU, 24 GB |
+
+No taint on the GPU node: fractional pods do not request `nvidia.com/gpu`,
+so they would not get the automatic toleration. Instead every system
+component gets a *required* placement on the system node, from one variable
+(`system_node_selector`), and `vm-verify.yml` fails if the GPU node runs
+anything but DaemonSets and GPU workloads.
+
+**What it took, in the order the cluster revealed it:**
+
+1. **Node-role labels cannot come from the kubelet.** NodeRestriction stops a
+   kubelet from setting `node-role.kubernetes.io/*` on its own node, so the
+   labels are applied with `kubectl label` from the server, as Run:ai's
+   node-roles guide does.
+2. **SELinux blocked the volumes.** local-path-provisioner's helper pod could
+   not create `/opt/local-path-provisioner/...` ("Permission denied"), every
+   PVC stayed Pending and the control-plane install timed out after 20
+   minutes. Fix: the directory gets the `container_file_t` type, registered
+   with `semanage fcontext` so a relabel keeps it. SELinux stays Enforcing.
+3. **`global.affinity` does not reach the subcharts.** 24 Run:ai services
+   landed on `runai-cp`, but Keycloak and thanos-query on the GPU node: the
+   third-party subcharts (`keycloakx`, `postgresql.primary`, `thanos.query`,
+   `thanos.receive`, `nats`) default to a YAML anchor of the chart's own
+   *preferred* affinity, which a user value for `global.affinity` does not
+   change. Each now gets the required affinity explicitly (keycloakx as a
+   template string).
+4. **RKE2's own add-ons.** coredns had no node restriction and ran on the GPU
+   node. `HelmChartConfig` manifests pin coredns and metrics-server to the
+   system node. Then coredns would not finish rolling out: its chart
+   *requires* one replica per node and its autoscaler keeps two replicas, so
+   on one system node the second replica can never schedule. The
+   anti-affinity is now *preferred*; helm merged the new value with the
+   default until the required key was set to `null` explicitly.
+5. GPU Operator, cert-manager and kube-prometheus-stack controllers got a
+   `nodeSelector`; their per-node DaemonSets (driver, toolkit, device plugin,
+   DCGM, node-exporter) still cover the GPU node, as they must.
+
+
+## Step 22: Run:ai on the two-node RKE2 cluster, and a hardening that breaks fractions
+
+After the placement fixes, `runai.yml` installed Run:ai unchanged on RKE2:
+cluster `Connected`, all operands ready, UI at `https://runai.<cp-ip>.nip.io`.
+Two more things surfaced on the way:
+
+- **CPU requests, not CPU usage.** With 12 vCPU the control-plane VM was at
+  94% of its CPU *requests* before Run:ai's cluster side was even installed;
+  the third NATS replica could not schedule ("Insufficient cpu"), JetStream
+  could not create its streams and `audit-service` and `tenants-manager`
+  crash-looped. Run:ai's requirements (about 10 CPU for the control plane +
+  10 for cluster services) were right: the VM went to 20 vCPU (offline
+  resize with `virsh setvcpus --config`).
+- **Two more controllers on the GPU node.** `vm-verify.yml` caught
+  `karta-operator` and the `gpu-fractioning` controller, both from subcharts
+  of the cluster chart (`karta.nodeSelector`,
+  `kai-resource-management.kai-scheduler.gpu-fractioning.nodeSelector`). The
+  cluster role now also applies values changes to an installed release
+  (compared without the cluster UID and the spent bootstrap token). After
+  that: "runai-rocky runs 13 pods, all DaemonSets or GPU workloads".
+
+Then the labs: scheduling labs passed, but **every GPU-fraction lab failed**:
+inside a fractional pod there was no `/dev/nvidia*` and no `nvidia-smi`.
+The pod spec asks for no GPU at all (fractions do not request
+`nvidia.com/gpu`); Run:ai's fractioning layer injects
+`NVIDIA_VISIBLE_DEVICES=GPU-<uuid>` (plus `NVIDIA_GPU_MEMORY_REQUEST/LIMIT`)
+into the container when it is created. RKE2's GPU Operator guide recommends
+`ACCEPT_NVIDIA_VISIBLE_DEVICES_ENVVAR_WHEN_UNPRIVILEGED=false` so pods cannot
+grab GPUs through that variable, and the toolkit duly ignored it. On k3d the
+toolkit ran with defaults (`true`), which is why fractions worked there.
+
+**Run:ai fractions need `ACCEPT_NVIDIA_VISIBLE_DEVICES_ENVVAR_WHEN_UNPRIVILEGED=true`.**
+The trade-off is documented next to the setting: an unprivileged pod could
+set the variable itself; whole-GPU requests still go through volume mounts.
+After the change all five fraction labs passed on Rocky + RKE2.
+
+Also found: Rocky's GenericCloud image enables **Cockpit** (web console on
+port 9090, reachable from the LAN). Nobody can log in (the user has no
+password), but it is an extra admin login page on the LAN. Left on for now
+because it is handy in a lab; masking `cockpit.socket` in the base role (or a
+`vm_cockpit` switch) is the production choice. And with the GPU passed through, the VM's text
+console shows up on the monitor plugged into the GPU while the keyboard stays
+with the host: expected, the host console lives on the iGPU / IP-KVM.
+
+## Step 23: Logging in to the UI, and a "changed" that never stopped
+
+With the labs green on the VM track, the next question was the obvious one:
+what are the username and password for the UI? The answers were spread over
+a role default, a generated file and a CA file nobody had trusted yet, so
+they now have their own page, [ui-access.md](ui-access.md): user
+`admin@runai.local`, the password from `~/.config/runai-oss/admin-password`
+(generated once, shared by both tracks), and how to trust
+`runai-ca.pem` on macOS, Linux, Windows and Firefox. Watching the Workloads
+page while `labs/run.sh` ran was a good first tour: each lab's pods appear,
+go Pending for the reason the lab is about (a gang that doesn't fit, a
+foreground pod waiting for a background one to be reclaimed) and disappear.
+
+The full VM run (second run of every playbook, all 13 labs, `vm-verify.yml`)
+passed, except idempotence: `vm-guest.yml` and `vm-cluster.yml` reported
+`changed=1` on every run. The culprit was the node-role task:
+`kubectl label --overwrite` prints `node/runai-cp not labeled` when nothing
+changes, and the check was `'labeled' in stdout`. Substring checks on
+human-readable output need the negative case tested too. Now
+`'not labeled' not in stdout`, and the second run reports `changed=0`.
+
 ---
 
 ## Next

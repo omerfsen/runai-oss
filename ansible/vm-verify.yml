@@ -1,0 +1,44 @@
+---
+# Proves the GPU node is dedicated: every pod on it must be either part of a
+# DaemonSet (driver, toolkit, device plugin, DCGM, CNI, node-exporter...), a
+# static pod of the node itself (kube-proxy, owner kind Node), or
+# a workload that uses the GPU (nvidia.com/gpu, or a Run:ai GPU fraction).
+# Anything else (a controller, a Run:ai service, Prometheus, coredns...) fails.
+#
+#   ansible-playbook vm-verify.yml -e @vm.local.yml
+- name: Verify the GPU node only runs GPU work
+  hosts: workstation
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Pods on {{ gpu_vm_name }} that are neither DaemonSets nor GPU work
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --context {{ kube_context }} get pods -A -o json \
+          --field-selector 'spec.nodeName={{ gpu_vm_name }},status.phase!=Succeeded,status.phase!=Failed' \
+        | jq -r '
+            .items[]
+            | select([.metadata.ownerReferences[]?.kind] | (index("DaemonSet") or index("Node")) | not)
+            | select(.metadata.annotations // {} | keys | map(select(test("^(gpu-fraction|gpu-memory|runai-allocated-gpus)$"))) | length == 0)
+            | select([.spec.containers[].resources.limits // {} | keys[]] | index("nvidia.com/gpu") | not)
+            | "\(.metadata.namespace)/\(.metadata.name)"'
+      args: {executable: /bin/bash}
+      register: offenders
+      changed_when: false
+
+    - name: Count the pods there
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --context {{ kube_context }} get pods -A --no-headers \
+          --field-selector 'spec.nodeName={{ gpu_vm_name }},status.phase!=Succeeded,status.phase!=Failed' | wc -l
+      args: {executable: /bin/bash}
+      register: pod_count
+      changed_when: false
+
+    - name: Fail if anything but DaemonSets and GPU work runs there
+      ansible.builtin.assert:
+        that: offenders.stdout_lines | length == 0
+        fail_msg: "Not GPU work, on the GPU node {{ gpu_vm_name }}: {{ offenders.stdout_lines | join(', ') }}"
+        success_msg: >-
+          {{ gpu_vm_name }} runs {{ pod_count.stdout | trim }} pods, all DaemonSets
+          or GPU workloads; controllers and services stay on {{ cp_vm_name }}.

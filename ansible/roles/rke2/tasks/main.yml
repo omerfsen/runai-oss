@@ -1,8 +1,9 @@
 ---
-# Single-node RKE2 server on Rocky Linux 10. RPM install (the official
-# installer has an EL10 repo), which also brings the rke2-selinux policy, so
-# SELinux stays enforcing. Traefik is the ingress controller (RKE2's default
-# since v1.36, set explicitly here), as on the k3d track.
+# RKE2 on Rocky Linux 10: a server on the control-plane VM, an agent on the
+# GPU VM (rke2_role). RPM install (the official installer has an EL10 repo),
+# which also brings the rke2-selinux policy, so SELinux stays enforcing.
+# Traefik is the ingress controller (RKE2's default since v1.36, set
+# explicitly here), as on the k3d track.
 
 - name: RKE2 config directory
   ansible.builtin.file:
@@ -10,126 +11,221 @@
     state: directory
     mode: "0755"
 
+# The GPU Operator's toolkit puts this binary on the GPU node; RKE2 then
+# registers an "nvidia" runtime. Only once it exists can it be containerd's
+# default: before that, a default pointing at a missing binary would break
+# every pod.
+- name: Is the NVIDIA container runtime installed?
+  ansible.builtin.stat:
+    path: /usr/local/nvidia/toolkit/nvidia-container-runtime
+  register: nvidia_runtime
+
+- name: Read the server's join token
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/rke2/server/node-token
+  delegate_to: "{{ groups['rke2_server'][0] }}"
+  register: rke2_token
+  no_log: true
+  when: rke2_role == 'agent'
+
 - name: RKE2 config
   ansible.builtin.copy:
     dest: /etc/rancher/rke2/config.yaml
     mode: "0600"
     content: |
+      {% if rke2_role == 'server' %}
       write-kubeconfig-mode: "0600"
       ingress-controller: traefik
       tls-san:
         - {{ vm_ip }}
         - {{ vm_hostname }}
+      {% else %}
+      server: https://{{ rke2_server_ip }}:9345
+      token: {{ rke2_token.content | b64decode | trim }}
+      {% endif %}
       kubelet-arg:
         # Run:ai's control plane starts ~40 pods at once; lift the 5 pulls/s limit.
         - registry-qps=0
+      {% if nvidia_runtime.stat.exists %}
+      # nvidia as containerd's default runtime, as on the k3d track: without it
+      # GPU pods run under runc with no driver inside ("nvidia-smi: command not
+      # found") unless they set runtimeClassName: nvidia, and Run:ai's don't.
+      default-runtime: nvidia
+      {% endif %}
   register: rke2_config
+  no_log: true          # the agent's copy carries the join token
 
-- name: Install RKE2 (RPM, pinned)
+- name: Install RKE2 {{ rke2_role }} (RPM, pinned)
   ansible.builtin.shell: |
     set -o pipefail
     curl -sfL 'https://raw.githubusercontent.com/rancher/rke2/{{ rke2_version | replace('+', '%2B') }}/install.sh' \
-      | INSTALL_RKE2_METHOD=rpm INSTALL_RKE2_VERSION={{ rke2_version }} sh -
+      | INSTALL_RKE2_METHOD=rpm INSTALL_RKE2_TYPE={{ rke2_role }} INSTALL_RKE2_VERSION={{ rke2_version }} sh -
   args:
     executable: /bin/bash
     creates: /usr/bin/rke2
 
-- name: Start rke2-server
+- name: Start rke2-{{ rke2_role }}
   ansible.builtin.systemd:
-    name: rke2-server
+    name: rke2-{{ rke2_role }}
     state: "{{ 'restarted' if rke2_config.changed else 'started' }}"
     enabled: true
 
-- name: Wait for the node to become Ready
+# Checked from the server for both roles: the agent has no admin kubeconfig.
+- name: Wait for {{ vm_hostname }} to become Ready
   ansible.builtin.command: >-
     /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-    get nodes --no-headers
-  register: nodes
-  until: "' Ready ' in nodes.stdout"
+    get node {{ vm_hostname }} --no-headers
+  delegate_to: "{{ groups['rke2_server'][0] }}"
+  register: node_state
+  until: node_state.rc == 0 and ' Ready ' in node_state.stdout
   retries: 60
   delay: 10
   changed_when: false
 
-- name: Install the local-path StorageClass (pinned) and make it the default
-  ansible.builtin.shell: |
-    set -o pipefail
-    k="/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
-    out=$($k apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_version }}/deploy/local-path-storage.yaml)
-    $k patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' >/dev/null
-    echo "$out"
-  args: {executable: /bin/bash}
-  register: local_path
-  changed_when: "' created' in local_path.stdout or ' configured' in local_path.stdout"
+# node-role.kubernetes.io/* labels: a kubelet may not set them on its own
+# node (NodeRestriction), so they are applied from the server, as Run:ai's
+# node-roles guide does with kubectl label.
+- name: Apply the Run:ai node roles to {{ vm_hostname }}
+  ansible.builtin.command: >-
+    /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+    label node {{ vm_hostname }} {{ rke2_node_labels | join(' ') }} --overwrite
+  delegate_to: "{{ groups['rke2_server'][0] }}"
+  register: node_labels
+  # Unchanged labels print "node/<n> not labeled", which also contains "labeled".
+  changed_when: "'not labeled' not in node_labels.stdout"
+  when: rke2_node_labels | length > 0
 
-- name: Put kubectl on the guest's PATH
-  ansible.builtin.copy:
-    src: /var/lib/rancher/rke2/bin/kubectl
-    dest: /usr/local/bin/kubectl
-    remote_src: true
-    mode: "0755"
+# ── Everything below runs on the server only ─────────────────────────────
+- name: Server-only setup
+  when: rke2_role == 'server'
+  block:
+    # Pinned version; the provisioner itself stays on the system node.
+    - name: Install the local-path StorageClass and make it the default
+      ansible.builtin.shell: |
+        set -o pipefail
+        k="/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
+        out=$($k apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_version }}/deploy/local-path-storage.yaml)
+        $k patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' >/dev/null
+        $k -n local-path-storage patch deploy local-path-provisioner \
+          -p '{"spec":{"template":{"spec":{"nodeSelector":{{ system_node_selector | to_json }}}}}}' >/dev/null
+        echo "$out"
+      args: {executable: /bin/bash}
+      register: local_path
+      changed_when: "' created' in local_path.stdout or ' configured' in local_path.stdout"
 
-- name: The login user's .kube directory
-  ansible.builtin.file:
-    path: "/home/{{ vm_user }}/.kube"
-    state: directory
-    owner: "{{ vm_user }}"
-    mode: "0700"
+    # RKE2's own add-ons have no node restriction; coredns landed on the GPU
+    # node. HelmChartConfig in the manifests directory is RKE2's way to set
+    # their chart values.
+    - name: Keep RKE2's coredns and metrics-server on the system node
+      ansible.builtin.copy:
+        dest: /var/lib/rancher/rke2/server/manifests/runai-oss-system-addons.yaml
+        mode: "0600"
+        content: |
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChartConfig
+          metadata:
+            name: rke2-coredns
+            namespace: kube-system
+          spec:
+            valuesContent: |-
+              nodeSelector: {{ system_node_selector | to_json }}
+              autoscaler:
+                nodeSelector: {{ system_node_selector | to_json }}
+              # The default *requires* one replica per node and the autoscaler
+              # keeps 2 replicas: with one system node the second can never
+              # schedule and the rollout hangs. Preferred still spreads them
+              # when there are more system nodes.
+              affinity:
+                podAntiAffinity:
+                  # null deletes the chart's default; helm would merge it otherwise.
+                  requiredDuringSchedulingIgnoredDuringExecution: null
+                  preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+                        labelSelector:
+                          matchExpressions:
+                            - {key: k8s-app, operator: In, values: [kube-dns]}
+          ---
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChartConfig
+          metadata:
+            name: rke2-metrics-server
+            namespace: kube-system
+          spec:
+            valuesContent: |-
+              nodeSelector: {{ system_node_selector | to_json }}
+      when: system_node_selector | length > 0
 
-- name: Give the login user a kubeconfig
-  ansible.builtin.copy:
-    src: /etc/rancher/rke2/rke2.yaml
-    dest: "/home/{{ vm_user }}/.kube/config"
-    remote_src: true
-    owner: "{{ vm_user }}"
-    mode: "0600"
+    - name: Put kubectl on the server's PATH
+      ansible.builtin.copy:
+        src: /var/lib/rancher/rke2/bin/kubectl
+        dest: /usr/local/bin/kubectl
+        remote_src: true
+        mode: "0755"
 
-- name: Shell conveniences for the login user
-  ansible.builtin.blockinfile:
-    path: "/home/{{ vm_user }}/.bashrc"
-    marker: "# {mark} kubectl (runai-oss)"
-    block: |
-      alias k=kubectl
-      source <(kubectl completion bash)
-      complete -o default -F __start_kubectl k
+    - name: The login user's .kube directory
+      ansible.builtin.file:
+        path: "/home/{{ vm_user }}/.kube"
+        state: directory
+        owner: "{{ vm_user }}"
+        mode: "0700"
 
-# ── Kubeconfig on the control node, as context rke2-<vm> ─────────────────
-- name: Read the admin kubeconfig
-  ansible.builtin.slurp:
-    src: /etc/rancher/rke2/rke2.yaml
-  register: rke2_kubeconfig_raw
-  no_log: true
+    - name: Give the login user a kubeconfig
+      ansible.builtin.copy:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: "/home/{{ vm_user }}/.kube/config"
+        remote_src: true
+        owner: "{{ vm_user }}"
+        mode: "0600"
 
-- name: Write it on the control node, pointed at the VM, renamed
-  ansible.builtin.copy:
-    dest: "{{ rke2_kubeconfig }}"
-    mode: "0600"
-    content: >-
-      {{ rke2_kubeconfig_raw.content | b64decode
-         | replace('https://127.0.0.1:6443', 'https://' ~ vm_ip ~ ':6443')
-         | replace('name: default', 'name: ' ~ rke2_context)
-         | replace('cluster: default', 'cluster: ' ~ rke2_context)
-         | replace('user: default', 'user: ' ~ rke2_context)
-         | replace('current-context: default', 'current-context: ' ~ rke2_context) }}
-  delegate_to: localhost
-  become: false
-  no_log: true
+    - name: Shell conveniences for the login user
+      ansible.builtin.blockinfile:
+        path: "/home/{{ vm_user }}/.bashrc"
+        marker: "# {mark} kubectl (runai-oss)"
+        block: |
+          alias k=kubectl
+          source <(kubectl completion bash)
+          complete -o default -F __start_kubectl k
 
-# Merge into ~/.kube/config so every role can use --context {{ rke2_context }}.
-- name: Merge it into ~/.kube/config
-  ansible.builtin.shell: |
-    set -o pipefail
-    mkdir -p ~/.kube
-    tmp=$(mktemp)
-    KUBECONFIG=~/.kube/config:{{ rke2_kubeconfig }} kubectl config view --flatten > "$tmp"
-    if ! cmp -s "$tmp" ~/.kube/config; then mv "$tmp" ~/.kube/config; chmod 600 ~/.kube/config; echo merged; else rm -f "$tmp"; fi
-  args: {executable: /bin/bash}
-  register: kube_merge
-  changed_when: "'merged' in kube_merge.stdout"
-  delegate_to: localhost
-  become: false
+    # ── Kubeconfig on the workstation, as context {{ rke2_context }} ──────
+    - name: Read the admin kubeconfig
+      ansible.builtin.slurp:
+        src: /etc/rancher/rke2/rke2.yaml
+      register: rke2_kubeconfig_raw
+      no_log: true
+
+    - name: Write it on the workstation, pointed at the server, renamed
+      ansible.builtin.copy:
+        dest: "{{ rke2_kubeconfig }}"
+        mode: "0600"
+        content: >-
+          {{ rke2_kubeconfig_raw.content | b64decode
+             | replace('https://127.0.0.1:6443', 'https://' ~ vm_ip ~ ':6443')
+             | replace('name: default', 'name: ' ~ rke2_context)
+             | replace('cluster: default', 'cluster: ' ~ rke2_context)
+             | replace('user: default', 'user: ' ~ rke2_context)
+             | replace('current-context: default', 'current-context: ' ~ rke2_context) }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # Merged into ~/.kube/config so every role can use --context {{ rke2_context }}.
+    - name: Merge it into ~/.kube/config
+      ansible.builtin.shell: |
+        set -o pipefail
+        mkdir -p ~/.kube
+        tmp=$(mktemp)
+        KUBECONFIG=~/.kube/config:{{ rke2_kubeconfig }} kubectl config view --flatten > "$tmp"
+        if ! cmp -s "$tmp" ~/.kube/config; then mv "$tmp" ~/.kube/config; chmod 600 ~/.kube/config; echo merged; else rm -f "$tmp"; fi
+      args: {executable: /bin/bash}
+      register: kube_merge
+      changed_when: "'merged' in kube_merge.stdout"
+      delegate_to: localhost
+      become: false
 
 - name: Report
   ansible.builtin.debug:
     msg: >-
-      RKE2 {{ rke2_version }} up on {{ vm_hostname }}. From the workstation:
-      kubectl --context {{ rke2_context }} get nodes
+      RKE2 {{ rke2_version }} {{ rke2_role }} up on {{ vm_hostname }}
+      (labels {{ rke2_node_labels | join(', ') }}).

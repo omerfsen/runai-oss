@@ -1,0 +1,39 @@
+---
+# The two VMs as Ansible hosts, with their per-host settings (RKE2 role,
+# Run:ai node roles). Imported by vm-guest.yml, vm-cluster.yml, vm-verify.yml.
+- name: Add the VMs to the inventory
+  hosts: workstation
+  gather_facts: false
+  tasks:
+    - name: Add {{ cp_vm_name }} (RKE2 server, Run:ai system node)
+      ansible.builtin.add_host:
+        name: "{{ cp_vm_name }}"
+        groups: [rocky_guests, rke2_server]
+        ansible_host: "{{ cp_vm_ip }}"
+        ansible_user: rocky
+        ansible_ssh_private_key_file: "{{ playbook_dir }}/.keys/{{ cp_vm_name }}_ed25519"
+        ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new
+        vm_ip: "{{ cp_vm_ip }}"
+        vm_hostname: "{{ cp_vm_name }}"
+        rke2_role: server
+        rke2_node_labels:
+          - node-role.kubernetes.io/runai-system=true
+          - node-role.kubernetes.io/runai-cpu-worker=true
+      changed_when: false
+
+    - name: Add {{ gpu_vm_name }} (RKE2 agent, GPU worker only)
+      ansible.builtin.add_host:
+        name: "{{ gpu_vm_name }}"
+        groups: [rocky_guests, rke2_agent]
+        ansible_host: "{{ gpu_vm_ip }}"
+        ansible_user: rocky
+        ansible_ssh_private_key_file: "{{ playbook_dir }}/.keys/{{ gpu_vm_name }}_ed25519"
+        ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new
+        vm_ip: "{{ gpu_vm_ip }}"
+        vm_hostname: "{{ gpu_vm_name }}"
+        rke2_role: agent
+        rke2_server_ip: "{{ cp_vm_ip }}"
+        rke2_node_labels:
+          - node-role.kubernetes.io/runai-system=false
+          - node-role.kubernetes.io/runai-gpu-worker=true
+      changed_when: false

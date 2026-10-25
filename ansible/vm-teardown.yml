@@ -1,0 +1,48 @@
+---
+# Deletes both VMs (domain, UEFI vars, disk, cloud-init seed) and the RKE2
+# context on the workstation. The downloaded Rocky image, the GPU passthrough
+# config and the SSH keys stay; vm-host.yml rebuilds from there.
+#
+#   ansible-playbook vm-teardown.yml -e @vm.local.yml
+- name: Delete the VM track's VMs
+  hosts: workstation
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop and undefine {{ item }}
+      ansible.builtin.shell: |
+        set -o pipefail
+        virsh dominfo {{ item }} >/dev/null 2>&1 || exit 0
+        virsh destroy {{ item }} >/dev/null 2>&1 || true
+        virsh undefine {{ item }} --nvram >/dev/null
+        echo removed
+      args: {executable: /bin/bash}
+      loop: ["{{ cp_vm_name }}", "{{ gpu_vm_name }}"]
+      register: undefine
+      changed_when: "'removed' in undefine.stdout"
+
+    - name: Remove the disks and seeds
+      ansible.builtin.file:
+        path: "/var/lib/libvirt/images/{{ item }}"
+        state: absent
+      loop:
+        - "{{ cp_vm_name }}.qcow2"
+        - "{{ cp_vm_name }}-seed.iso"
+        - "{{ gpu_vm_name }}.qcow2"
+        - "{{ gpu_vm_name }}-seed.iso"
+
+    - name: Forget the VMs' SSH host keys (rebuilt VMs get new ones)
+      ansible.builtin.command: ssh-keygen -R {{ item }}
+      loop: ["{{ cp_vm_ip }}", "{{ gpu_vm_ip }}"]
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Drop the RKE2 context from ~/.kube/config
+      ansible.builtin.shell: |
+        kubectl config delete-context {{ kube_context }} >/dev/null 2>&1 && echo deleted
+        kubectl config delete-cluster {{ kube_context }} >/dev/null 2>&1 || true
+        kubectl config delete-user {{ kube_context }} >/dev/null 2>&1 || true
+      become: false
+      register: ctx
+      changed_when: "'deleted' in ctx.stdout"

@@ -12,3 +12,16 @@ prometheus:
     # chart's (GPU Operator's DCGM exporter, Run:ai's own components).
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
+{% if system_node_selector | length > 0 %}
+    nodeSelector: {{ system_node_selector | to_json }}
+
+# Controllers on the system node; node-exporter (a DaemonSet) still covers
+# every node, the GPU node included.
+prometheusOperator:
+  nodeSelector: {{ system_node_selector | to_json }}
+  admissionWebhooks:
+    patch:
+      nodeSelector: {{ system_node_selector | to_json }}
+kube-state-metrics:
+  nodeSelector: {{ system_node_selector | to_json }}
+{% endif %}

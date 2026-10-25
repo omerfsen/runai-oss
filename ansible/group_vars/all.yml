@@ -13,6 +13,10 @@ cluster_name: runai
 # kubectl/helm context every add-on and Run:ai role uses. The VM track
 # (vm-*.yml) sets it to the RKE2 cluster's context instead.
 kube_context: "k3d-{{ cluster_name }}"
+# nodeSelector for system services (GPU Operator controller, cert-manager,
+# Prometheus, Run:ai). Empty on k3d (one node); the VM track pins them to the
+# CPU node so the GPU node only runs GPU work.
+system_node_selector: {}
 # Run:ai 3.0 supports Kubernetes 1.35 to 1.37 (docs: support-matrix.md); newest.
 k3s_version: v1.37.1-k3s1
 # 0 = CPU-only cluster on the stock rancher/k3s image; N or "all" = GPUs.
@@ -36,11 +40,16 @@ gpu_operator_version: v26.7.1   # Run:ai 3.0: 25.10 to 26.7.1; GPU fractions nee
 # true only for real nodes with no host driver (also turns on its toolkit).
 gpu_operator_install_driver: false
 gpu_operator_driver_version: "615.71.09"   # used only when the operator installs the driver
-# containerd for the operator's toolkit (when it installs the driver). RKE2
-# values from docs.rke2.io; the volume-mount variables isolate GPUs per pod.
+# containerd for the operator's toolkit (when it installs the driver), from
+# docs.rke2.io, with one deliberate difference: RKE2 recommends
+# ACCEPT_NVIDIA_VISIBLE_DEVICES_ENVVAR_WHEN_UNPRIVILEGED=false, but Run:ai
+# delivers a GPU fraction by injecting NVIDIA_VISIBLE_DEVICES into the
+# container; with "false" fractional pods get no GPU at all (no /dev/nvidia*,
+# "nvidia-smi: command not found"). Trade-off: an unprivileged pod could set
+# that variable itself. Whole-GPU requests still use volume mounts.
 gpu_operator_toolkit_env:
   - {name: CONTAINERD_SOCKET, value: /run/k3s/containerd/containerd.sock}
-  - {name: ACCEPT_NVIDIA_VISIBLE_DEVICES_ENVVAR_WHEN_UNPRIVILEGED, value: "false"}
+  - {name: ACCEPT_NVIDIA_VISIBLE_DEVICES_ENVVAR_WHEN_UNPRIVILEGED, value: "true"}
   - {name: ACCEPT_NVIDIA_VISIBLE_DEVICES_AS_VOLUME_MOUNTS, value: "true"}
 
 install_cert_manager: true

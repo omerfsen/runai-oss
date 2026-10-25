@@ -2,9 +2,11 @@
 
 Open-source NVIDIA Run:ai on one workstation, as training material. Parts:
 
-- `ansible/`: builds the platform. `host.yml` (GPU driver + container toolkit
-  on the host), `cluster.yml` (k3d GPU cluster + add-ons), `runai.yml`
-  (Prometheus, TLS, Run:ai control plane + cluster), `teardown.yml`.
+- `ansible/`: builds the platform. k3d track: `host.yml` (GPU driver +
+  container toolkit on the host), `cluster.yml` (k3d GPU cluster + add-ons).
+  VM track (Rocky Linux 10.2 + RKE2, GPU passthrough): `vm-host.yml`,
+  `vm-guest.yml`, `vm-cluster.yml`, all with `-e @vm.local.yml` (gitignored,
+  from `vm.example.yml`). Both: `runai.yml` (Prometheus, TLS, Run:ai), `teardown.yml`.
 - `labs/`: one Run:ai feature per lab (README + YAML + `check.sh`);
   `labs/run.sh` runs them all. `tests/`: platform tests below Run:ai.
 - `docs/build-log.md`: every step, command, failure and fix, written as it
@@ -25,8 +27,9 @@ Open-source NVIDIA Run:ai on one workstation, as training material. Parts:
   prometheus) when the values differ too. cert-manager's only value is fixed
   in the role; Run:ai releases are installed once, then upgraded by version.
 - Roles drive `kubectl`/`helm`/`k3d`/`docker` with `ansible.builtin.command`
-  (no Python kubernetes library), always with `--context k3d-<cluster_name>`.
-  Every non-obvious task gets a comment saying why.
+  (no Python kubernetes library), always with `--context {{ kube_context }}`
+  (default `k3d-runai`; the VM track sets `rke2-<vm_name>`). Every non-obvious
+  task gets a comment saying why.
 - Show the plan and values before installing Run:ai itself.
 - The repo is public: no registry names, credentials, client names or
   personal secret-tool names in it.

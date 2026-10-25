@@ -1,24 +1,28 @@
 ---
-# VM track, part 3: the cluster add-ons on the RKE2 cluster in the VM. Same
-# roles as the k3d track, pointed at kube_context rke2-<vm_name>; here the
-# GPU Operator also builds and loads the NVIDIA driver inside the VM.
+# VM track, part 3: the cluster add-ons on RKE2. Same roles as the k3d track,
+# pointed at kube_context; the GPU Operator builds and loads the NVIDIA driver
+# inside the GPU VM, and every controller is pinned to the system node
+# (system_node_selector) so the GPU node only runs GPU work and DaemonSets.
 #
 #   ansible-playbook vm-cluster.yml -e @vm.local.yml
 #   ansible-playbook runai.yml -e @vm.local.yml        # then Run:ai, as on k3d
+- name: Add the VMs to the inventory
+  ansible.builtin.import_playbook: vm-inventory.yml
+
 - name: GPU Operator and cert-manager on RKE2
   hosts: workstation
   become: false
   gather_facts: true
   pre_tasks:
-    - name: Use the VM's address
+    - name: Use the control-plane VM's address for ingress
       ansible.builtin.set_fact:
-        cluster_ip: "{{ vm_ip }}"
+        cluster_ip: "{{ cp_vm_ip }}"
 
     - name: Reach the RKE2 API
       ansible.builtin.command: kubectl --context {{ kube_context }} get nodes --no-headers
       register: rke2_nodes
       changed_when: false
-      failed_when: "' Ready ' not in rke2_nodes.stdout"
+      failed_when: rke2_nodes.stdout_lines | select('search', ' Ready ') | list | length < 2
   roles:
     - role: gpu_operator
       when: install_gpu_operator | bool
@@ -26,3 +30,13 @@
       when: install_cert_manager | bool
     - role: demo_app
       when: install_demo | bool
+
+# The GPU Operator's toolkit has now put the NVIDIA runtime on the GPU node;
+# re-apply the RKE2 role there so it becomes containerd's default (one agent
+# restart). The server has no toolkit, so its config does not change.
+- name: Make nvidia the default runtime on the GPU node
+  hosts: rke2_agent
+  become: true
+  gather_facts: false
+  roles:
+    - rke2

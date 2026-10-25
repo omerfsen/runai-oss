@@ -1,0 +1,14 @@
+{{ ansible_managed | comment }}
+# cert-manager {{ cert_manager_version }} (jetstack/cert-manager)
+crds:
+  enabled: true
+{% if system_node_selector | length > 0 %}
+# All of it on the system node, off the GPU node.
+nodeSelector: {{ system_node_selector | to_json }}
+webhook:
+  nodeSelector: {{ system_node_selector | to_json }}
+cainjector:
+  nodeSelector: {{ system_node_selector | to_json }}
+startupapicheck:
+  nodeSelector: {{ system_node_selector | to_json }}
+{% endif %}

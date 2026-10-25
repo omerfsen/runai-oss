@@ -7,6 +7,8 @@ rocky_image_checksum: sha256:9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab
 rocky_osinfo: rhel10.1
 
 vm_user: rocky
+# PCI functions passed through to this VM (the GPU VM gets gpu_pci_ids).
+vm_hostdevs: []
 vm_autostart: true
 vm_disk_path: /var/lib/libvirt/images
 # Fixed MAC so cloud-init can match the NIC by address.

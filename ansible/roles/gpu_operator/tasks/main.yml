@@ -65,7 +65,7 @@
 
 - name: Read the GPU product label
   ansible.builtin.command: >-
-    kubectl --context {{ kube_context }} get nodes
+    kubectl --context {{ kube_context }} get nodes -l nvidia.com/gpu.present=true
     -o jsonpath='{.items[0].metadata.labels.nvidia\.com/gpu\.product}'
   register: gpu_product
   changed_when: false

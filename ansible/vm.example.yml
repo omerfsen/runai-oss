@@ -1,5 +1,9 @@
 ---
-# Settings for the VM track (Rocky Linux 10.2 + RKE2 + GPU passthrough).
+# Settings for the VM track: two Rocky Linux 10.2 VMs on RKE2.
+#   runai-cp     CPU only: Kubernetes control plane, Run:ai control plane and
+#                cluster services, Prometheus, cert-manager (node role runai-system)
+#   runai-rocky  the GPU passed through: GPU workloads only (runai-gpu-worker)
+#
 # Copy to vm.local.yml (gitignored) and fill in your network:
 #
 #   cp vm.example.yml vm.local.yml
@@ -7,34 +11,40 @@
 #   ansible-playbook vm-guest.yml -e @vm.local.yml
 #   ansible-playbook vm-cluster.yml -e @vm.local.yml
 #   ansible-playbook runai.yml -e @vm.local.yml
-#   CONTEXT=rke2-runai-rocky labs/run.sh
+#   ansible-playbook vm-verify.yml -e @vm.local.yml   # nothing but GPU work on the GPU node
+#   CONTEXT=rke2-runai-cp labs/run.sh
 
-# ── The VM ───────────────────────────────────────────────────────────────
-vm_name: runai-rocky
-vm_hostname: runai-rocky
-# Run:ai control plane + cluster need ~20 CPU / 32 GB together; leave the host some.
-vm_vcpus: 16
-vm_memory_mb: 49152
-vm_disk_gb: 200
+# ── The two VMs (vCPUs can be overcommitted; RAM should not) ─────────────
+cp_vm_name: runai-cp
+cp_vm_ip: 192.0.2.61             # documentation address: replace
+cp_vm_vcpus: 20                  # Run:ai control plane ~10 + cluster services ~10 CPU requests
+cp_vm_memory_mb: 40960           # Run:ai control plane ~12 GB + cluster services ~20 GB
+cp_vm_disk_gb: 200
 
-# ── Network: a bridge on the host, a free static address on that LAN ────
-vm_bridge: br0                  # host bridge with the uplink NIC in it
-vm_ip: 192.0.2.60               # documentation address: replace
+gpu_vm_name: runai-rocky
+gpu_vm_ip: 192.0.2.60            # documentation address: replace
+gpu_vm_vcpus: 8
+gpu_vm_memory_mb: 24576
+gpu_vm_disk_gb: 200
+
+# ── Network: a bridge on the host, free static addresses on that LAN ────
+vm_bridge: br0                   # host bridge with the uplink NIC in it
 vm_prefix: 24
 vm_gateway: 192.0.2.1
-vm_dns: [192.0.2.1]             # must resolve public names (nip.io)
+vm_dns: [192.0.2.1]              # must resolve public names (nip.io)
 
-# ── The GPU handed to the VM ─────────────────────────────────────────────
+# ── The GPU handed to the GPU VM ─────────────────────────────────────────
 # lspci -D | grep -i nvidia   (the VGA function and its audio function)
 gpu_pci_ids:
   - "0000:01:00.0"
   - "0000:01:00.1"
-# permanent: the VM owns the GPU from boot (the host and k3d lose it);
+# permanent: the GPU VM owns the GPU from boot (the host and k3d lose it);
 # off: back to the host. Each switch needs one host reboot.
 gpu_passthrough_mode: permanent
 
-# ── Point the shared roles (GPU Operator, cert-manager, Run:ai) at RKE2 ──
-kube_context: "rke2-{{ vm_name }}"
-host_ip: "{{ vm_ip }}"           # Run:ai's nip.io domain and ingress use the VM's address
-gpu_operator_install_driver: true   # the operator builds the driver inside the VM
+# ── Point the shared roles at RKE2, keep system services off the GPU node ─
+kube_context: "rke2-{{ cp_vm_name }}"
+host_ip: "{{ cp_vm_ip }}"         # Run:ai's nip.io domain and ingress use the CP VM
+system_node_selector: {node-role.kubernetes.io/runai-system: "true"}
+gpu_operator_install_driver: true # the operator builds the driver inside the GPU VM
 install_demo: false
