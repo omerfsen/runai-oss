@@ -1,0 +1,10 @@
+---
+# Password login for the "rocky" user. Off by default: the VMs are SSH-key
+# only, and root stays locked either way.
+#   vm_cockpit       Cockpit (web console, https://<vm>:9090) on, and a
+#                    password for rocky so it can log in there and on the console
+#   vm_ssh_password  also accept that password over SSH
+# The password is generated once into vm_password_file, outside the repo.
+vm_cockpit: false
+vm_ssh_password: false
+vm_password_file: "~/.config/runai-oss/vm-password"

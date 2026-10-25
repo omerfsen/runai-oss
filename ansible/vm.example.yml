@@ -48,3 +48,10 @@ host_ip: "{{ cp_vm_ip }}"         # Run:ai's nip.io domain and ingress use the C
 system_node_selector: {node-role.kubernetes.io/runai-system: "true"}
 gpu_operator_install_driver: true # the operator builds the driver inside the GPU VM
 install_demo: false
+
+# ── Password login for the rocky user (root stays locked) ────────────────
+# Off: SSH keys only, Cockpit masked. On: a password generated once into
+# ~/.config/runai-oss/vm-password, for Cockpit (https://<vm>:9090) and the
+# console; vm_ssh_password also allows it over SSH.
+vm_cockpit: false
+vm_ssh_password: false

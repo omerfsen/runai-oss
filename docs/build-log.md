@@ -745,9 +745,8 @@ After the change all five fraction labs passed on Rocky + RKE2.
 
 Also found: Rocky's GenericCloud image enables **Cockpit** (web console on
 port 9090, reachable from the LAN). Nobody can log in (the user has no
-password), but it is an extra admin login page on the LAN. Left on for now
-because it is handy in a lab; masking `cockpit.socket` in the base role (or a
-`vm_cockpit` switch) is the production choice. And with the GPU passed through, the VM's text
+password), but it is an extra admin login page on the LAN. Now a switch,
+`vm_cockpit` (see Step 24). And with the GPU passed through, the VM's text
 console shows up on the monitor plugged into the GPU while the keyboard stays
 with the host: expected, the host console lives on the iGPU / IP-KVM.
 
@@ -771,6 +770,30 @@ passed, except idempotence: `vm-guest.yml` and `vm-cluster.yml` reported
 changes, and the check was `'labeled' in stdout`. Substring checks on
 human-readable output need the negative case tested too. Now
 `'not labeled' not in stdout`, and the second run reports `changed=0`.
+
+## Step 24: Password login for the VMs, as a switch
+
+Cockpit was on in both VMs but useless: cloud-init locks the `rocky` password.
+Rather than set one by hand, `rocky_base` got two switches, both off by
+default:
+
+- `vm_cockpit`: generates a password once into
+  `~/.config/runai-oss/vm-password` (0600, outside the repo), sets it for
+  `rocky`, starts Cockpit. Off masks `cockpit.socket`, so no login page sits
+  on the LAN.
+- `vm_ssh_password`: also accepts that password over SSH, through
+  `/etc/ssh/sshd_config.d/40-runai-oss.conf`. sshd keeps the first value it
+  reads and loads drop-ins in name order, so `40-` beats cloud-init's
+  `50-cloud-init.conf` (`PasswordAuthentication no`).
+
+Root stays locked in both cases. Two small traps. Ansible's `password_hash`
+filter needs Python's `crypt` module, which is gone from the control node's
+Python 3.15, so the hash is made on the guest with `openssl passwd -6`.
+And a random salt would change the hash on every run (`changed=1` forever),
+so the salt comes from the host name: same password, same hash, `changed=0`.
+Checked without putting the password on a command line: Cockpit's
+`/cockpit/login` with curl reading `-K -` from stdin (200 on both VMs), and
+SSH with `SSH_ASKPASS` reading the file.
 
 ---
 

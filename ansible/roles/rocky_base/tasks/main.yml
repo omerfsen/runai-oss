@@ -108,3 +108,67 @@
   ansible.builtin.command: restorecon -Rv /opt/local-path-provisioner
   register: lp_restorecon
   changed_when: lp_restorecon.stdout | length > 0
+
+# ── Password login (vm_cockpit / vm_ssh_password) ─────────────────────────
+# Rocky's GenericCloud image turns Cockpit on, but nobody can log in: cloud-init
+# locks the rocky password. Either give rocky a password, or mask Cockpit so no
+# login page sits on the LAN.
+- name: Password for rocky
+  when: vm_cockpit or vm_ssh_password
+  block:
+    - name: Generate the VM password once
+      ansible.builtin.copy:
+        dest: "{{ vm_password_file | replace('~', lookup('ansible.builtin.env', 'HOME')) }}"
+        content: "{{ lookup('ansible.builtin.password', '/dev/null chars=ascii_letters,digits length=20') }}"
+        mode: "0600"
+        force: false              # never overwrite: the password must not change
+      delegate_to: localhost
+      become: false
+      run_once: true
+      no_log: true
+
+    # Hashed on the guest: the control node's Python may lack crypt, which
+    # password_hash needs. A salt fixed per host keeps the hash, and the user
+    # task, unchanged on the next run.
+    - name: Hash it
+      ansible.builtin.command:
+        cmd: openssl passwd -6 -salt {{ (inventory_hostname | hash('sha256'))[:16] }} -stdin
+        stdin: "{{ lookup('ansible.builtin.file', vm_password_file | replace('~', lookup('ansible.builtin.env', 'HOME'))) }}"
+      register: vm_password_hash
+      changed_when: false
+      no_log: true
+
+    - name: Set it for rocky (root stays locked)
+      ansible.builtin.user:
+        name: rocky
+        password: "{{ vm_password_hash.stdout }}"
+      no_log: true
+
+- name: Cockpit on or off
+  ansible.builtin.systemd:
+    name: cockpit.socket
+    state: "{{ 'started' if vm_cockpit else 'stopped' }}"
+    enabled: "{{ vm_cockpit }}"
+    masked: "{{ not vm_cockpit }}"
+
+# sshd takes the first value it reads, and drop-ins load in name order, so
+# 40-* wins over cloud-init's 50-cloud-init.conf (PasswordAuthentication no).
+- name: SSH password login
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/40-runai-oss.conf
+    mode: "0600"
+    content: |
+      PasswordAuthentication yes
+  register: sshd_conf
+  when: vm_ssh_password
+
+- name: No SSH password login
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/40-runai-oss.conf
+    state: absent
+  register: sshd_conf_off
+  when: not vm_ssh_password
+
+- name: Check and reload sshd
+  ansible.builtin.shell: sshd -t && systemctl reload sshd
+  when: (sshd_conf is changed) or (sshd_conf_off is changed)

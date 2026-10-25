@@ -79,3 +79,11 @@ trust the new file again and remove the old "runai-oss" CA.
 Nothing has to be trusted system-wide on the Ansible host: the labs call the
 API with `curl -k`. For your own calls, pass the CA instead:
 `curl --cacert ~/.config/runai-oss/runai-ca.pem https://runai.<...>.nip.io/api/v1/...`.
+
+## The VMs themselves (VM track)
+
+By default the VMs take SSH keys only (`ansible/.keys/<vm>_ed25519`, user
+`rocky`). Set `vm_cockpit: true` in `vm.local.yml` for Cockpit at
+`https://<vm-ip>:9090`, and `vm_ssh_password: true` for SSH with a password
+too, then run `vm-guest.yml` again. The password is generated once into
+`~/.config/runai-oss/vm-password`; root stays locked.
