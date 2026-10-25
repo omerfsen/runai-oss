@@ -10,6 +10,9 @@ nvidia_ctk_version: "1.20.1-1"
 
 # ── k3d cluster (cluster.yml) ────────────────────────────────────────────
 cluster_name: runai
+# kubectl/helm context every add-on and Run:ai role uses. The VM track
+# (vm-*.yml) sets it to the RKE2 cluster's context instead.
+kube_context: "k3d-{{ cluster_name }}"
 # Run:ai 3.0 supports Kubernetes 1.35 to 1.37 (docs: support-matrix.md); newest.
 k3s_version: v1.37.1-k3s1
 # 0 = CPU-only cluster on the stock rancher/k3s image; N or "all" = GPUs.
@@ -32,6 +35,13 @@ gpu_operator_version: v26.7.1   # Run:ai 3.0: 25.10 to 26.7.1; GPU fractions nee
 # false on k3d: the node shares the host kernel and the host has the driver.
 # true only for real nodes with no host driver (also turns on its toolkit).
 gpu_operator_install_driver: false
+gpu_operator_driver_version: "615.71.09"   # used only when the operator installs the driver
+# containerd for the operator's toolkit (when it installs the driver). RKE2
+# values from docs.rke2.io; the volume-mount variables isolate GPUs per pod.
+gpu_operator_toolkit_env:
+  - {name: CONTAINERD_SOCKET, value: /run/k3s/containerd/containerd.sock}
+  - {name: ACCEPT_NVIDIA_VISIBLE_DEVICES_ENVVAR_WHEN_UNPRIVILEGED, value: "false"}
+  - {name: ACCEPT_NVIDIA_VISIBLE_DEVICES_AS_VOLUME_MOUNTS, value: "true"}
 
 install_cert_manager: true
 cert_manager_version: v1.21.3

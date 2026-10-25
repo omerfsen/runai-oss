@@ -3,7 +3,7 @@
 
 - name: Apply the demo app
   ansible.builtin.command:
-    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    cmd: kubectl --context {{ kube_context }} apply -f -
     stdin: "{{ lookup('ansible.builtin.template', 'demo.yaml.j2') }}"
   register: demo_apply
   changed_when: "' created' in demo_apply.stdout or ' configured' in demo_apply.stdout"
@@ -11,7 +11,7 @@
 
 - name: Wait for it
   ansible.builtin.command: >-
-    kubectl --context k3d-{{ cluster_name }} -n demo rollout status deploy/demo --timeout=120s
+    kubectl --context {{ kube_context }} -n demo rollout status deploy/demo --timeout=120s
   changed_when: false
   when: not ansible_check_mode
 

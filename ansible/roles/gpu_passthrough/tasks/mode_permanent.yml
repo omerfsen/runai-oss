@@ -1,0 +1,111 @@
+---
+# permanent: the host never drives the card. vfio-pci claims it from boot via
+# modprobe config baked into the initrd, so one reboot is needed after the
+# first run — the gate at the bottom stops the play until that has happened.
+
+- name: Keep libvirt from ever detaching the card live
+  ansible.builtin.include_tasks: guest_hostdevs.yml
+  vars:
+    hostdev_managed: "no"
+
+- name: Remove the on-demand hook and its module option, if present
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/libvirt/hooks/qemu.d/{{ vm_name }}-gpu-handover"
+    - /etc/modprobe.d/vfio-pci-options.conf
+
+# `blacklist` only stops loading by device alias. The NVIDIA driver package
+# also ships a udev rule (71-nvidia.rules) that runs `modprobe nvidia-drm`,
+# `nvidia-modeset` and `nvidia-uvm` every time the nvidia driver registers.
+# With the card on vfio-pci each load fails ("No NVIDIA devices probed"),
+# unregisters and re-triggers the rule: a loop that floods the host console
+# with "NVRM: ... is already bound to vfio-pci" several times a second.
+# `install ... /bin/false` makes modprobe refuse the modules, which ends it.
+# Off mode deletes this file, so the host driver loads normally again.
+- name: Keep the host GPU drivers from loading
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/blacklist-gpu-passthrough.conf
+    mode: "0644"
+    content: |
+      blacklist nouveau
+      blacklist nvidia
+      blacklist nvidia_drm
+      blacklist nvidia_modeset
+      blacklist nvidia_uvm
+      options nouveau modeset=0
+      install nvidia /bin/false
+      install nvidia_drm /bin/false
+      install nvidia_modeset /bin/false
+      install nvidia_uvm /bin/false
+  register: gpu_blacklist
+
+# The softdeps cover anything that still loads a driver by name despite the
+# blacklist (udev coldplug of the HDMI audio function via snd_hda_intel,
+# nouveau): vfio-pci is loaded first and claims the ids, so the other driver
+# finds nothing left to bind.
+- name: Bind the devices to vfio-pci at boot
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/vfio.conf
+    mode: "0644"
+    content: |
+      options vfio-pci ids={{ vfio_device_ids | join(',') }} disable_vga=1
+      softdep nvidia pre: vfio-pci
+      softdep nouveau pre: vfio-pci
+      softdep snd_hda_intel pre: vfio-pci
+  vars:
+    vfio_device_ids: "{{ gpu_vendor_device_ids.results | map(attribute='stdout') | list }}"
+  register: vfio_bind
+
+# With the host driver blacklisted nothing would pull vfio-pci in on its own
+# at boot — load it explicitly so it claims the card before anything else.
+- name: Load vfio-pci at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/vfio-pci.conf
+    mode: "0644"
+    content: |
+      vfio-pci
+  register: vfio_modload
+
+# A plain task rather than a handler: handlers are skipped when a play fails,
+# and the assert below fails by design on a first run. The initrd has to be
+# rebuilt before that point or the reboot changes nothing.
+- name: Rebuild the initrd so the new modprobe config is in it
+  ansible.builtin.command: "{{ initrd_rebuild_cmd }}"
+  when: gpu_blacklist.changed or vfio_bind.changed or vfio_modload.changed
+  changed_when: true
+
+- name: Confirm vfio-pci is bound to every requested function
+  ansible.builtin.shell: |
+    set -o pipefail
+    basename "$(readlink -f /sys/bus/pci/devices/{{ item }}/driver 2>/dev/null)" 2>/dev/null || echo none
+  args: {executable: /bin/bash}
+  changed_when: false
+  check_mode: false
+  loop: "{{ gpu_pci_ids }}"
+  register: final_drivers
+
+- name: Report binding state
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }} -> {{ item.stdout }}
+      {{ '(ready)' if item.stdout == 'vfio-pci' else '(NOT bound — reboot required after the initrd rebuild)' }}
+  loop: "{{ final_drivers.results }}"
+  loop_control: {label: "{{ item.item }}"}
+
+# This is the real gate. Failing here on a first run is expected and correct:
+# the modprobe config above only takes effect after a reboot, and vm_create
+# must not run against a GPU the host driver still owns.
+- name: Stop here until the GPU is actually on vfio-pci
+  ansible.builtin.assert:
+    that: item.stdout == 'vfio-pci'
+    fail_msg: >-
+      {{ item.item }} is still on '{{ item.stdout }}', not vfio-pci. If the
+      blacklist/vfio tasks above just changed something, this is the expected
+      first-run stop: REBOOT the host, then run vm-host.yml again and it will
+      carry on into creating the VM. If nothing changed and it still isn't vfio-pci
+      after a reboot, the host driver is loading before vfio-pci — check
+      `lsinitramfs` (Ubuntu) / `lsinitrd` (SLES) for the vfio.conf options.
+  loop: "{{ final_drivers.results }}"
+  loop_control: {label: "{{ item.item }}"}

@@ -1,0 +1,40 @@
+---
+# Settings for the VM track (Rocky Linux 10.2 + RKE2 + GPU passthrough).
+# Copy to vm.local.yml (gitignored) and fill in your network:
+#
+#   cp vm.example.yml vm.local.yml
+#   ansible-playbook vm-host.yml -e @vm.local.yml     # may ask for one reboot
+#   ansible-playbook vm-guest.yml -e @vm.local.yml
+#   ansible-playbook vm-cluster.yml -e @vm.local.yml
+#   ansible-playbook runai.yml -e @vm.local.yml
+#   CONTEXT=rke2-runai-rocky labs/run.sh
+
+# ── The VM ───────────────────────────────────────────────────────────────
+vm_name: runai-rocky
+vm_hostname: runai-rocky
+# Run:ai control plane + cluster need ~20 CPU / 32 GB together; leave the host some.
+vm_vcpus: 16
+vm_memory_mb: 49152
+vm_disk_gb: 200
+
+# ── Network: a bridge on the host, a free static address on that LAN ────
+vm_bridge: br0                  # host bridge with the uplink NIC in it
+vm_ip: 192.0.2.60               # documentation address: replace
+vm_prefix: 24
+vm_gateway: 192.0.2.1
+vm_dns: [192.0.2.1]             # must resolve public names (nip.io)
+
+# ── The GPU handed to the VM ─────────────────────────────────────────────
+# lspci -D | grep -i nvidia   (the VGA function and its audio function)
+gpu_pci_ids:
+  - "0000:01:00.0"
+  - "0000:01:00.1"
+# permanent: the VM owns the GPU from boot (the host and k3d lose it);
+# off: back to the host. Each switch needs one host reboot.
+gpu_passthrough_mode: permanent
+
+# ── Point the shared roles (GPU Operator, cert-manager, Run:ai) at RKE2 ──
+kube_context: "rke2-{{ vm_name }}"
+host_ip: "{{ vm_ip }}"           # Run:ai's nip.io domain and ingress use the VM's address
+gpu_operator_install_driver: true   # the operator builds the driver inside the VM
+install_demo: false

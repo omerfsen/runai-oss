@@ -1,0 +1,28 @@
+---
+# VM track, part 3: the cluster add-ons on the RKE2 cluster in the VM. Same
+# roles as the k3d track, pointed at kube_context rke2-<vm_name>; here the
+# GPU Operator also builds and loads the NVIDIA driver inside the VM.
+#
+#   ansible-playbook vm-cluster.yml -e @vm.local.yml
+#   ansible-playbook runai.yml -e @vm.local.yml        # then Run:ai, as on k3d
+- name: GPU Operator and cert-manager on RKE2
+  hosts: workstation
+  become: false
+  gather_facts: true
+  pre_tasks:
+    - name: Use the VM's address
+      ansible.builtin.set_fact:
+        cluster_ip: "{{ vm_ip }}"
+
+    - name: Reach the RKE2 API
+      ansible.builtin.command: kubectl --context {{ kube_context }} get nodes --no-headers
+      register: rke2_nodes
+      changed_when: false
+      failed_when: "' Ready ' not in rke2_nodes.stdout"
+  roles:
+    - role: gpu_operator
+      when: install_gpu_operator | bool
+    - role: cert_manager
+      when: install_cert_manager | bool
+    - role: demo_app
+      when: install_demo | bool

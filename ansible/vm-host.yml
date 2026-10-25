@@ -1,0 +1,23 @@
+---
+# VM track, part 1: hand the GPU to a KVM guest and create the Rocky Linux
+# 10.2 VM. Runs on the workstation as root.
+#
+#   ansible-playbook vm-host.yml -e @vm.local.yml
+#
+# In permanent mode the first run writes the vfio-pci config, rebuilds the
+# initrd and stops: reboot the host, run it again, and it creates the VM.
+- name: Hand the GPU to the VM and create it
+  hosts: workstation
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Require the local settings
+      ansible.builtin.assert:
+        that:
+          - vm_ip is defined
+          - not vm_ip.startswith('192.0.2.')
+        fail_msg: Copy vm.example.yml to vm.local.yml, set your network, and pass -e @vm.local.yml.
+  roles:
+    - gpu_passthrough
+    - role: rocky_vm
+      when: gpu_passthrough_mode == 'permanent'

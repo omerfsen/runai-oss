@@ -1,32 +1,41 @@
 {{ ansible_managed | comment }}
 # NVIDIA GPU Operator {{ gpu_operator_version }}
 # Full defaults: helm show values nvidia/gpu-operator --version {{ gpu_operator_version }}
+#
+# Two modes (gpu_operator_install_driver):
+#   false (k3d): the host has the driver and the node image the toolkit and
+#                device plugin; the operator adds NFD, feature discovery,
+#                DCGM exporter and validators only.
+#   true  (VM / real node): the operator owns driver, toolkit and device plugin.
 
 driver:
-  # false (k3d): the host's driver is used. The node is a container sharing the
-  # host kernel, and on a Secure Boot host the operator's modules would be
-  # rejected anyway. true: real nodes with no host driver only.
-  enabled: {{ gpu_operator_install_driver | bool | lower }}
-
-toolkit:
-  # The node image already ships the container toolkit and k3s registers the
-  # nvidia runtime. When the operator owns the driver it owns the toolkit too.
   enabled: {{ gpu_operator_install_driver | bool | lower }}
 {% if gpu_operator_install_driver | bool %}
-  env:
-    - name: CONTAINERD_CONFIG
-      value: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
-    - name: CONTAINERD_SOCKET
-      value: /run/k3s/containerd/containerd.sock
+  # 26.7.1 does not default to r615, which Run:ai fractions need. The operator
+  # appends the OS tag it detects (e.g. 615.71.09-rocky10).
+  version: "{{ gpu_operator_driver_version }}"
+{% endif %}
+
+toolkit:
+  enabled: {{ gpu_operator_install_driver | bool | lower }}
+{% if gpu_operator_install_driver | bool %}
+  # containerd location for the distribution (RKE2/k3s socket by default).
+  env: {{ gpu_operator_toolkit_env | to_json }}
 {% endif %}
 
 devicePlugin:
-  # The node image deploys its own device plugin from the k3s manifests
-  # directory; two on one node conflict.
   enabled: {{ gpu_operator_install_driver | bool | lower }}
+{% if gpu_operator_install_driver | bool %}
+  # Pass GPUs as volume mounts, not env vars, so an unprivileged pod cannot
+  # grab a GPU by setting NVIDIA_VISIBLE_DEVICES (docs.rke2.io GPU Operator).
+  env:
+    - name: DEVICE_LIST_STRATEGY
+      value: volume-mounts
+{% endif %}
 
 cdi:
   # Classic runtime injection; CDI specs come from the operator's toolkit.
   enabled: false
-  # Run:ai GPU fractions do not work while the NRI plugin is on (memory-fractions.md).
+  # Run:ai GPU fractions do not work while the NRI plugin is on (memory-fractions.md),
+  # even though RKE2's GPU Operator guide turns it on.
   nriPluginEnabled: false

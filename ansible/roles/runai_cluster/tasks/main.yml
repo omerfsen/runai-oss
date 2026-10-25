@@ -5,7 +5,7 @@
 
 - name: Read the deployed release
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n runai
+    helm --kube-context {{ kube_context }} -n runai
     list --filter '^runai-cluster$' -o json
   register: rc_release
   changed_when: false
@@ -92,7 +92,7 @@
       ansible.builtin.command:
         cmd: >-
           helm upgrade -i runai-cluster runai-oss/runai-cluster
-          --kube-context k3d-{{ cluster_name }} -n runai
+          --kube-context {{ kube_context }} -n runai
           --version {{ runai_version }}
           -f /tmp/runai-cluster-values.yaml -f -
           --timeout 20m

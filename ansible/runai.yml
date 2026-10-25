@@ -21,7 +21,7 @@
 
     - name: Check the add-ons Run:ai builds on
       ansible.builtin.command: >-
-        kubectl --context k3d-{{ cluster_name }} get deploy -A
+        kubectl --context {{ kube_context }} get deploy -A
         -o jsonpath='{.items[*].metadata.name}'
       register: deployments
       changed_when: false

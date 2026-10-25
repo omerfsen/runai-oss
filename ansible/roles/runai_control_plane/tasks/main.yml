@@ -59,7 +59,7 @@
 
 - name: Read the deployed release
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n runai-backend
+    helm --kube-context {{ kube_context }} -n runai-backend
     list --filter '^runai-backend$' -o json
   register: cp_release
   changed_when: false
@@ -78,7 +78,7 @@
   ansible.builtin.command:
     cmd: >-
       helm upgrade -i runai-backend runai-oss/control-plane
-      --kube-context k3d-{{ cluster_name }} -n runai-backend
+      --kube-context {{ kube_context }} -n runai-backend
       --version {{ runai_version }}
       -f /tmp/runai-control-plane-values.yaml -f -
       --timeout 20m
@@ -95,7 +95,7 @@
 
 - name: Wait for the control plane deployments
   ansible.builtin.command: >-
-    kubectl --context k3d-{{ cluster_name }} -n runai-backend
+    kubectl --context {{ kube_context }} -n runai-backend
     wait --for=condition=Available deploy --all --timeout=1200s
   changed_when: false
   when: not ansible_check_mode

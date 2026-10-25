@@ -1,0 +1,34 @@
+---
+# off: undo permanent mode and stop. host.yml does not build a guest in this
+# mode — there is nothing to hand it.
+
+- name: Drop the permanent-mode config
+  ansible.builtin.include_tasks: permanent_absent.yml
+
+# The guest must not come up while the host owns the card: no autostart, and
+# hostdevs libvirt would never try to detach live.
+- name: Keep libvirt from detaching the card live
+  ansible.builtin.include_tasks: guest_hostdevs.yml
+  vars:
+    hostdev_managed: "no"
+
+- name: Disable the guest's autostart while the host owns the card
+  ansible.builtin.command: virsh autostart --disable {{ vm_name }}
+  when: guest_dominfo.rc == 0
+  changed_when: false
+
+- name: Remove the on-demand hook and its module option too, if present
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/libvirt/hooks/qemu.d/{{ vm_name }}-gpu-handover"
+    - /etc/modprobe.d/vfio-pci-options.conf
+
+- name: Report what happens next
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Passthrough config removed — reboot and the host driver takes the card again.'
+         if permanent_removed.changed else 'No passthrough config present, nothing to undo.' }}
+      {{ 'It is on vfio-pci right now, so until that reboot the host still cannot use it.'
+         if card_still_on_vfio | bool else '' }}

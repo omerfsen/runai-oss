@@ -1,0 +1,26 @@
+---
+# Sets managed='yes'|'no' on the guest's PCI hostdevs (var: hostdev_managed).
+# managed='no' means libvirt never unbinds the card from a host driver
+# itself: it expects vfio-pci already there and fails the start cleanly
+# otherwise. That is what permanent and off modes want — a live detach of
+# this card has hard-frozen the host. Only on-demand mode wants 'yes'.
+
+- name: Does the guest domain exist?
+  ansible.builtin.command: virsh dominfo {{ vm_name }}
+  register: guest_dominfo
+  changed_when: false
+  failed_when: false
+
+- name: Set hostdev managed='{{ hostdev_managed }}' on the guest definition
+  ansible.builtin.shell: |
+    set -o pipefail
+    if virsh dumpxml --inactive {{ vm_name }} | grep -qE "<hostdev [^>]*managed='{{ 'yes' if hostdev_managed == 'no' else 'no' }}'"; then
+      virsh dumpxml --inactive {{ vm_name }} \
+        | sed "s/managed='{{ 'yes' if hostdev_managed == 'no' else 'no' }}'/managed='{{ hostdev_managed }}'/g" \
+        | virsh define /dev/stdin >/dev/null
+      echo changed
+    fi
+  args: {executable: /bin/bash}
+  register: hostdev_edit
+  changed_when: "'changed' in hostdev_edit.stdout"
+  when: guest_dominfo.rc == 0

@@ -10,7 +10,7 @@
 
 - name: Read the deployed release
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n monitoring
+    helm --kube-context {{ kube_context }} -n monitoring
     list --filter '^prometheus$' -o json
   register: prom_release
   changed_when: false
@@ -18,7 +18,7 @@
 
 - name: Read its values
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n monitoring
+    helm --kube-context {{ kube_context }} -n monitoring
     get values prometheus -o json
   register: prom_values
   changed_when: false
@@ -40,7 +40,7 @@
     - name: Install or upgrade it
       ansible.builtin.command: >-
         helm upgrade -i prometheus prometheus-community/kube-prometheus-stack
-        --kube-context k3d-{{ cluster_name }}
+        --kube-context {{ kube_context }}
         -n monitoring --create-namespace
         --version {{ prometheus_stack_version }}
         -f /tmp/kube-prometheus-stack-values.yaml

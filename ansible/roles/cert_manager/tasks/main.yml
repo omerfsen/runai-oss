@@ -6,7 +6,7 @@
 
 - name: Read the deployed cert-manager release
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n cert-manager
+    helm --kube-context {{ kube_context }} -n cert-manager
     list --filter '^cert-manager$' -o json
   register: cm_release
   changed_when: false
@@ -24,7 +24,7 @@
     - name: Install or upgrade it
       ansible.builtin.command: >-
         helm upgrade -i cert-manager jetstack/cert-manager
-        --kube-context k3d-{{ cluster_name }}
+        --kube-context {{ kube_context }}
         -n cert-manager --create-namespace
         --version {{ cert_manager_version }}
         --set crds.enabled=true
@@ -34,7 +34,7 @@
 
 - name: Create the Let's Encrypt ClusterIssuers
   ansible.builtin.command:
-    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    cmd: kubectl --context {{ kube_context }} apply -f -
     stdin: |
       apiVersion: cert-manager.io/v1
       kind: ClusterIssuer

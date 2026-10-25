@@ -11,7 +11,7 @@
 
 - name: Read the deployed release
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n gpu-operator
+    helm --kube-context {{ kube_context }} -n gpu-operator
     list --filter '^gpu-operator$' -o json
   register: gpu_release
   changed_when: false
@@ -19,7 +19,7 @@
 
 - name: Read its values
   ansible.builtin.command: >-
-    helm --kube-context k3d-{{ cluster_name }} -n gpu-operator
+    helm --kube-context {{ kube_context }} -n gpu-operator
     get values gpu-operator -o json
   register: gpu_values
   changed_when: false
@@ -42,7 +42,7 @@
     - name: Install or upgrade it
       ansible.builtin.command: >-
         helm upgrade -i gpu-operator nvidia/gpu-operator
-        --kube-context k3d-{{ cluster_name }}
+        --kube-context {{ kube_context }}
         -n gpu-operator --create-namespace
         --version {{ gpu_operator_version }}
         -f /tmp/gpu-operator-values.yaml
@@ -54,7 +54,7 @@
 # got the GPU through the operator's stack.
 - name: Wait for the CUDA validator
   ansible.builtin.command: >-
-    kubectl --context k3d-{{ cluster_name }} -n gpu-operator get pods
+    kubectl --context {{ kube_context }} -n gpu-operator get pods
     -l app=nvidia-cuda-validator -o jsonpath='{.items[*].status.phase}'
   register: cuda_validator
   until: "'Succeeded' in cuda_validator.stdout"
@@ -65,7 +65,7 @@
 
 - name: Read the GPU product label
   ansible.builtin.command: >-
-    kubectl --context k3d-{{ cluster_name }} get nodes
+    kubectl --context {{ kube_context }} get nodes
     -o jsonpath='{.items[0].metadata.labels.nvidia\.com/gpu\.product}'
   register: gpu_product
   changed_when: false

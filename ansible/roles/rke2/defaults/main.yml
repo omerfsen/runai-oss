@@ -1,0 +1,8 @@
+---
+# Run:ai 3.0 supports Kubernetes 1.35 to 1.37; newest RKE2 in that range.
+rke2_version: v1.37.1+rke2r1
+local_path_version: v0.0.37
+# Where the admin kubeconfig lands on the control node (gitignored), and the
+# context name it gets in ~/.kube/config.
+rke2_kubeconfig: "{{ playbook_dir }}/.keys/{{ vm_name }}.kubeconfig"
+rke2_context: "rke2-{{ vm_name }}"

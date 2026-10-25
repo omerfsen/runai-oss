@@ -1,0 +1,171 @@
+---
+# Preflight for GPU passthrough (from the agentic-secops-lab repo's kvm_host
+# role, proven on this host). It writes the same /etc/modprobe.d files as that
+# repo, so on a shared host the two control the same GPU state.
+#
+# Preflight for GPU passthrough. Every check here fails the play rather than
+# warning: a half-configured passthrough produces a VM that boots fine and has
+# no usable GPU, which is much harder to diagnose later.
+
+- name: Read GPU vendor:device ids
+  ansible.builtin.include_tasks: vendor_ids.yml
+
+- name: Install virtualisation packages
+  ansible.builtin.package:
+    name: "{{ kvm_host_packages }}"
+    state: present
+
+- name: Ensure libvirt is running
+  ansible.builtin.systemd:
+    name: "{{ libvirt_service }}"
+    state: started
+    enabled: true
+
+- name: Add the invoking user to the libvirt group
+  ansible.builtin.user:
+    name: "{{ ansible_env.SUDO_USER | default(ansible_user_id) }}"
+    groups: "{{ libvirt_group }}"
+    append: true
+  when: ansible_env.SUDO_USER is defined
+
+# ── Broad sanity check before the granular GPU-specific ones below ────────
+- name: Run virt-host-validate
+  ansible.builtin.command: virt-host-validate qemu
+  register: host_validate
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Show virt-host-validate output
+  ansible.builtin.debug:
+    msg: "{{ host_validate.stdout_lines }}"
+
+- name: Fail if virt-host-validate found a blocking issue
+  ansible.builtin.assert:
+    that: host_validate.rc == 0
+    fail_msg: >-
+      virt-host-validate found a blocking issue (a FAIL line above, not just a
+      WARN) — this host cannot run KVM guests as currently configured.
+
+# ── IOMMU ────────────────────────────────────────────────────────────────
+- name: Check IOMMU is enabled
+  ansible.builtin.find:
+    paths: /sys/kernel/iommu_groups
+    file_type: directory
+  register: iommu_groups
+
+- name: Fail if IOMMU is off
+  ansible.builtin.assert:
+    that: iommu_groups.matched > 0
+    fail_msg: >-
+      No IOMMU groups found — the GPU cannot be passed through at all.
+      On Ubuntu: add intel_iommu=on iommu=pt (or amd_iommu=on for AMD) to
+      GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub, run update-grub, reboot.
+      On SLES: same parameters, then grub2-mkconfig -o /boot/grub2/grub.cfg.
+      This play does not edit your bootloader — getting that wrong costs you the
+      machine.
+
+# ── The GPU's IOMMU group must contain nothing else ───────────────────────
+- name: Resolve the IOMMU group of each requested device
+  ansible.builtin.shell: |
+    set -o pipefail
+    readlink -f /sys/bus/pci/devices/{{ item }}/iommu_group | xargs basename
+  args: {executable: /bin/bash}
+  changed_when: false
+  check_mode: false
+  loop: "{{ gpu_pci_ids }}"
+  register: gpu_groups
+
+- name: List every device sharing those groups
+  ansible.builtin.shell: |
+    set -o pipefail
+    ls /sys/kernel/iommu_groups/{{ item }}/devices/
+  args: {executable: /bin/bash}
+  changed_when: false
+  check_mode: false
+  loop: "{{ gpu_groups.results | map(attribute='stdout') | unique | list }}"
+  register: group_members
+
+- name: Show what is in each group
+  ansible.builtin.debug:
+    msg: "IOMMU group {{ item.item }} contains: {{ item.stdout_lines | join(', ') }}"
+  loop: "{{ group_members.results }}"
+  loop_control: {label: "group {{ item.item }}"}
+
+# sysfs lists group members in full DDDD:BB:DD.F form, same as gpu_pci_ids.
+- name: Fail if a group contains devices you are not passing through
+  ansible.builtin.assert:
+    that: item.stdout_lines | difference(gpu_pci_ids) | length == 0
+    fail_msg: >-
+      IOMMU group {{ item.item }} also contains
+      {{ item.stdout_lines | difference(gpu_pci_ids) | join(', ') }}.
+      Passthrough is all-or-nothing per group — either add these to gpu_pci_ids
+      (if the guest can own them) or move the card to a slot with cleaner
+      grouping. Consumer boards frequently group the GPU with a PCIe port or an
+      NVMe controller.
+  loop: "{{ group_members.results }}"
+  loop_control: {label: "group {{ item.item }}"}
+
+# ── Is the card also the firmware's boot display? ─────────────────────────
+- name: Check whether a passthrough function is the boot VGA device
+  ansible.builtin.shell: |
+    set -o pipefail
+    cat /sys/bus/pci/devices/{{ item }}/boot_vga 2>/dev/null || echo 0
+  args: {executable: /bin/bash}
+  changed_when: false
+  check_mode: false
+  loop: "{{ gpu_pci_ids }}"
+  register: boot_vga
+
+- name: Warn if the firmware framebuffer sits on the card being passed through
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }} is the boot VGA device, so the firmware console
+      framebuffer lives on the card you are handing to the guest. This usually
+      still works on a 6.x kernel, but if the guest later fails to start with
+      "can't reserve BAR" errors: make another GPU (an iGPU, if there is one)
+      the primary display in firmware, or add
+      initcall_blacklist=simpledrm_platform_driver_init to the kernel cmdline
+      — this play won't edit your bootloader. Either way, a local host console
+      needs to be on a different GPU: this one is dark whenever vfio-pci owns
+      it (always in permanent mode, while the guest runs in on-demand mode).
+  loop: "{{ boot_vga.results }}"
+  loop_control: {label: "{{ item.item }}"}
+  when: item.stdout | trim == '1'
+
+# ── Who holds the card right now ─────────────────────────────────────────
+# Informational only: what counts as "right" depends on the mode. In
+# permanent mode the host driver is expected here on a first run (the mode
+# file writes the config and gates on a reboot); in on-demand mode it is the
+# normal resting state; in off mode it is the goal.
+- name: Check which driver currently owns each function
+  ansible.builtin.shell: |
+    set -o pipefail
+    basename "$(readlink -f /sys/bus/pci/devices/{{ item }}/driver 2>/dev/null)" 2>/dev/null || echo none
+  args: {executable: /bin/bash}
+  changed_when: false
+  check_mode: false
+  loop: "{{ gpu_pci_ids }}"
+  register: current_drivers
+
+- name: Report current driver binding
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }} -> {{ item.stdout }}
+      {{ '(host driver owns this — expected before the first reboot)'
+         if item.stdout not in ['vfio-pci', 'none'] and gpu_passthrough_mode == 'permanent'
+         else '' }}
+  loop: "{{ current_drivers.results }}"
+  loop_control: {label: "{{ item.item }}"}
+
+# Only permanent and off: the agentic-secops-lab repo's experimental
+# on-demand mode (live hand-over) hard-froze this kind of host and is left out.
+- name: Validate gpu_passthrough_mode
+  ansible.builtin.assert:
+    that: gpu_passthrough_mode in ['permanent', 'off']
+    fail_msg: >-
+      gpu_passthrough_mode must be 'permanent' or 'off', got
+      '{{ gpu_passthrough_mode }}'. See vm.example.yml.
+
+- name: Apply the selected hand-over mode
+  ansible.builtin.include_tasks: "mode_{{ gpu_passthrough_mode }}.yml"

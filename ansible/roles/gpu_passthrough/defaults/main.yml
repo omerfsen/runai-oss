@@ -1,0 +1,30 @@
+---
+# Host OS differences. Defaults target Ubuntu 24.04 LTS; the SUSE values are
+# here because SUSE's own guide treats a SLES KVM host as a normal topology.
+kvm_host_packages: >-
+  {{ ['qemu-kvm', 'libvirt-daemon-system', 'libvirt-clients', 'virtinst',
+      'ovmf', 'genisoimage', 'libguestfs-tools']
+     if ansible_facts['os_family'] == 'Debian'
+     else ['libvirt', 'qemu-kvm', 'virt-install', 'libvirt-client',
+           'guestfs-tools', 'cdrtools'] }}
+
+libvirt_service: >-
+  {{ 'libvirtd' if ansible_facts['os_family'] == 'Debian' else 'libvirtd' }}
+
+libvirt_group: >-
+  {{ 'libvirt' if ansible_facts['os_family'] == 'Debian' else 'libvirt' }}
+
+initrd_rebuild_cmd: >-
+  {{ 'update-initramfs -u -k all'
+     if ansible_facts['os_family'] == 'Debian'
+     else 'dracut -f --regenerate-all' }}
+
+grub_cmdline_file: >-
+  {{ '/etc/default/grub' if ansible_facts['os_family'] == 'Debian' else '/etc/default/grub' }}
+
+grub_update_cmd: >-
+  {{ 'update-grub' if ansible_facts['os_family'] == 'Debian' else 'grub2-mkconfig -o /boot/grub2/grub.cfg' }}
+
+# permanent: the GPU belongs to the VM from boot (one reboot to switch);
+# off: back to the host. Set in vm.local.yml.
+gpu_passthrough_mode: permanent

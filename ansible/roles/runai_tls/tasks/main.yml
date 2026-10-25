@@ -8,7 +8,7 @@
 
 - name: Create the namespaces
   ansible.builtin.command:
-    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    cmd: kubectl --context {{ kube_context }} apply -f -
     stdin: |
       apiVersion: v1
       kind: Namespace
@@ -29,7 +29,7 @@
 
 - name: Create the CA and the certificates
   ansible.builtin.command:
-    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    cmd: kubectl --context {{ kube_context }} apply -f -
     stdin: |
       apiVersion: cert-manager.io/v1
       kind: ClusterIssuer
@@ -93,7 +93,7 @@
 
 - name: Wait for the certificates
   ansible.builtin.command: >-
-    kubectl --context k3d-{{ cluster_name }} -n {{ item.ns }}
+    kubectl --context {{ kube_context }} -n {{ item.ns }}
     wait --for=condition=Ready certificate/{{ item.name }} --timeout=120s
   loop:
     - {ns: cert-manager, name: runai-ca}
@@ -105,7 +105,7 @@
 
 - name: Read the CA certificate
   ansible.builtin.command: >-
-    kubectl --context k3d-{{ cluster_name }} -n cert-manager
+    kubectl --context {{ kube_context }} -n cert-manager
     get secret runai-ca -o jsonpath='{.data.ca\.crt}'
   register: ca_b64
   changed_when: false
@@ -113,7 +113,7 @@
 # Run:ai's customCA mounts secret runai-ca-cert, key runai-ca.pem.
 - name: Publish the CA as runai-ca-cert
   ansible.builtin.command:
-    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    cmd: kubectl --context {{ kube_context }} apply -f -
     stdin: |
       apiVersion: v1
       kind: Secret
@@ -128,7 +128,7 @@
 
 - name: Create the wildcard Ingress for workloads
   ansible.builtin.command:
-    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    cmd: kubectl --context {{ kube_context }} apply -f -
     stdin: |
       apiVersion: networking.k8s.io/v1
       kind: Ingress

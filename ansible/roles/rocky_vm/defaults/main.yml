@@ -1,0 +1,15 @@
+---
+# Rocky Linux 10.2 GenericCloud, pinned to one build and its checksum
+# (https://dl.rockylinux.org/pub/rocky/10.2/images/x86_64/CHECKSUM).
+rocky_image_url: https://dl.rockylinux.org/pub/rocky/10.2/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2
+rocky_image_checksum: sha256:9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48
+# virt-install's osinfo database has no rocky10 yet; RHEL 10.1 is the same platform.
+rocky_osinfo: rhel10.1
+
+vm_user: rocky
+vm_autostart: true
+vm_disk_path: /var/lib/libvirt/images
+# Fixed MAC so cloud-init can match the NIC by address.
+vm_mac: "{{ '52:54:00:' ~ (vm_name | hash('md5'))[0:2] ~ ':' ~ (vm_name | hash('md5'))[2:4] ~ ':' ~ (vm_name | hash('md5'))[4:6] }}"
+ssh_key_dir: "{{ playbook_dir }}/.keys"
+ssh_key_path: "{{ ssh_key_dir }}/{{ vm_name }}_ed25519"

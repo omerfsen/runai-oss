@@ -1,0 +1,4 @@
+# Local, never published: network settings, SSH keys, kubeconfigs
+ansible/vm.local.yml
+ansible/.keys/
+*.kubeconfig

@@ -1,0 +1,79 @@
+---
+# Rocky Linux 10 prepared for RKE2 (docs.rke2.io/install/requirements):
+# kernel-modules-extra for nf_conntrack, NetworkManager away from the CNI
+# interfaces, higher inotify limits. SELinux stays enforcing: the RKE2 RPMs
+# bring the rke2-selinux policy.
+
+- name: Wait for cloud-init to finish
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+
+- name: Install the packages RKE2 needs on EL10
+  ansible.builtin.dnf:
+    name:
+      - kernel-modules-extra      # nf_conntrack on RHEL 10 and derivatives
+      - container-selinux
+      - bash-completion
+      - tar
+    state: present
+
+# The base kernel and kernel-modules-extra must match the running kernel,
+# else nf_conntrack cannot load: reboot once if dnf pulled a newer kernel.
+- name: Running kernel
+  ansible.builtin.command: uname -r
+  register: running_kernel
+  changed_when: false
+
+- name: Installed kernel-modules-extra versions
+  ansible.builtin.command: rpm -q kernel-modules-extra --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n'
+  register: extra_versions
+  changed_when: false
+
+- name: Reboot onto the kernel kernel-modules-extra was built for
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+  when: running_kernel.stdout not in extra_versions.stdout_lines
+
+- name: Load nf_conntrack
+  community.general.modprobe:
+    name: nf_conntrack
+    state: present
+    persistent: present
+
+# Documented RKE2 known issue: NetworkManager otherwise manages the CNI's
+# interfaces and pod networking breaks.
+- name: Keep NetworkManager off the CNI interfaces
+  ansible.builtin.copy:
+    dest: /etc/NetworkManager/conf.d/rke2-canal.conf
+    mode: "0644"
+    content: |
+      [keyfile]
+      unmanaged-devices=interface-name:flannel*;interface-name:cali*;interface-name:tunl*;interface-name:vxlan.calico;interface-name:vxlan-v6.calico;interface-name:wireguard.cali;interface-name:wg-v6.cali
+  register: nm_conf
+
+- name: Reload NetworkManager
+  ansible.builtin.systemd:
+    name: NetworkManager
+    state: reloaded
+  when: nm_conf.changed
+
+# firewalld would need every RKE2 port opened by hand; RKE2's docs recommend
+# turning it off. Not installed in the GenericCloud image, but be sure.
+- name: Stop firewalld if present
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+  failed_when: false
+
+# GPU Operator, Run:ai and Prometheus watch many files (RKE2 requirements page).
+- name: Raise the inotify limits
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-inotify.conf
+    reload: true
+  loop:
+    - {key: fs.inotify.max_user_instances, value: "8192"}
+    - {key: fs.inotify.max_user_watches, value: "524288"}
+  loop_control: {label: "{{ item.key }}"}

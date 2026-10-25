@@ -1,0 +1,204 @@
+---
+# The Rocky Linux 10.2 guest: an SSH keypair, a cloud-init seed with a static
+# address on the bridge, then virt-install with the GPU attached. Adapted from
+# the agentic-secops-lab repo's vm_create role (SLES there, Rocky here).
+
+# ── Dedicated keypair, generated on the control node ─────────────────────
+- name: Ensure key directory exists
+  ansible.builtin.file:
+    path: "{{ ssh_key_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Generate an SSH keypair for this lab
+  community.crypto.openssh_keypair:
+    path: "{{ ssh_key_path }}"
+    type: ed25519
+    comment: "ansible@{{ vm_name }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+
+- name: Read the public key
+  ansible.builtin.slurp:
+    src: "{{ ssh_key_path }}.pub"
+  delegate_to: localhost
+  become: false
+  register: lab_pubkey
+
+# ── Base image ───────────────────────────────────────────────────────────
+- name: Fetch the Rocky Linux qcow2 (checksum verified)
+  ansible.builtin.get_url:
+    url: "{{ rocky_image_url }}"
+    dest: "{{ vm_disk_path }}/{{ rocky_image_url | basename }}"
+    checksum: "{{ rocky_image_checksum }}"
+    mode: "0644"
+
+- name: Copy it to the VM's disk
+  ansible.builtin.copy:
+    src: "{{ vm_disk_path }}/{{ rocky_image_url | basename }}"
+    dest: "{{ vm_disk_path }}/{{ vm_name }}.qcow2"
+    remote_src: true
+    force: false
+    mode: "0600"
+  register: vm_disk
+
+- name: Grow it to the requested size
+  ansible.builtin.command: qemu-img resize {{ vm_disk_path }}/{{ vm_name }}.qcow2 {{ vm_disk_gb }}G
+  when: vm_disk.changed
+  changed_when: true
+
+# ── cloud-init: static IP on the bridge, our key ─────────────────────────
+# Built once: the seed only matters for the guest's first boot.
+- name: Is the seed ISO already built?
+  ansible.builtin.stat:
+    path: "{{ vm_disk_path }}/{{ vm_name }}-seed.iso"
+  register: seed_iso
+
+- name: Build and pack the cloud-init seed
+  when: not seed_iso.stat.exists
+  block:
+    - name: Stage directory for the seed files
+      ansible.builtin.file:
+        path: "/tmp/seed-{{ vm_name }}"
+        state: directory
+        mode: "0700"
+
+    - name: Write the seed files
+      ansible.builtin.copy:
+        dest: "/tmp/seed-{{ vm_name }}/{{ item.name }}"
+        mode: "0644"
+        content: "{{ item.content }}"
+      loop:
+        - name: meta-data
+          content: |
+            instance-id: {{ vm_name }}
+            local-hostname: {{ vm_hostname }}
+        - name: user-data
+          content: |
+            #cloud-config
+            hostname: {{ vm_hostname }}
+            fqdn: {{ vm_hostname }}
+            users:
+              - name: {{ vm_user }}
+                sudo: ALL=(ALL) NOPASSWD:ALL
+                shell: /bin/bash
+                lock_passwd: true
+                ssh_authorized_keys:
+                  - {{ lab_pubkey.content | b64decode | trim }}
+            ssh_pwauth: false
+            # Grow the root filesystem into the resized disk on first boot.
+            growpart: {mode: auto, devices: ["/"]}
+            resize_rootfs: true
+        - name: network-config
+          content: |
+            version: 2
+            ethernets:
+              eth0:
+                # By MAC: the interface name differs between images.
+                match: {macaddress: "{{ vm_mac }}"}
+                set-name: eth0
+                dhcp4: false
+                addresses: [{{ vm_ip }}/{{ vm_prefix }}]
+                routes:
+                  - to: 0.0.0.0/0
+                    via: {{ vm_gateway }}
+                nameservers:
+                  addresses: {{ vm_dns | to_json }}
+      loop_control: {label: "{{ item.name }}"}
+
+    - name: Pack the seed ISO
+      ansible.builtin.command: >-
+        genisoimage -output {{ vm_disk_path }}/{{ vm_name }}-seed.iso
+        -volid cidata -joliet -rock
+        /tmp/seed-{{ vm_name }}/user-data
+        /tmp/seed-{{ vm_name }}/meta-data
+        /tmp/seed-{{ vm_name }}/network-config
+      args: {creates: "{{ vm_disk_path }}/{{ vm_name }}-seed.iso"}
+
+  always:
+    - name: Remove the staged seed files
+      ansible.builtin.file:
+        path: "/tmp/seed-{{ vm_name }}"
+        state: absent
+
+# ── Define and start the domain ──────────────────────────────────────────
+- name: Check whether the domain already exists
+  ansible.builtin.command: virsh dominfo {{ vm_name }}
+  register: dominfo
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# UEFI without Secure Boot: inside the guest the GPU Operator builds the NVIDIA
+# kernel modules, and an unsigned module would be refused under Secure Boot
+# (the same failure the host had with DKMS, see the build log).
+- name: Create the VM
+  ansible.builtin.command: >-
+    virt-install
+    --name {{ vm_name }}
+    --vcpus {{ vm_vcpus }}
+    --memory {{ vm_memory_mb }}
+    --cpu host-passthrough
+    --machine q35
+    --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no
+    --disk path={{ vm_disk_path }}/{{ vm_name }}.qcow2,format=qcow2,bus=virtio
+    --disk path={{ vm_disk_path }}/{{ vm_name }}-seed.iso,device=cdrom
+    --network bridge={{ vm_bridge }},model=virtio,mac={{ vm_mac }}
+    {% for id in gpu_pci_ids %}--hostdev {{ id }},address.type=pci {% endfor %}
+    --graphics none
+    --console pty,target_type=serial
+    --osinfo {{ rocky_osinfo }}
+    --import
+    --noautoconsole
+  when: dominfo.rc != 0 and not ansible_check_mode
+  changed_when: true
+
+# virt-install can only create managed='yes'. Flip it to 'no' so libvirt never
+# tries to pull the card away from a host driver live: in permanent mode the
+# card is already on vfio-pci from boot (a live detach froze this host once).
+- name: Never let libvirt detach the card live
+  ansible.builtin.shell: |
+    set -o pipefail
+    if virsh dumpxml --inactive {{ vm_name }} | grep -q "managed='yes'"; then
+      virsh dumpxml --inactive {{ vm_name }} | sed "s/managed='yes'/managed='no'/g" | virsh define /dev/stdin >/dev/null
+      echo changed
+    fi
+  args: {executable: /bin/bash}
+  register: hostdev_unmanaged
+  changed_when: "'changed' in hostdev_unmanaged.stdout"
+  when: not ansible_check_mode
+
+- name: Set whether the domain starts with the host
+  ansible.builtin.command: virsh autostart {{ '' if vm_autostart else '--disable ' }}{{ vm_name }}
+  changed_when: false
+  when: not ansible_check_mode
+
+# The passthrough gate (gpu_passthrough role) has already proven every GPU
+# function is on vfio-pci, so starting is safe here.
+- name: Start the guest if it is shut off
+  ansible.builtin.shell: |
+    set -o pipefail
+    if [ "$(virsh domstate {{ vm_name }})" = "shut off" ]; then
+      virsh start {{ vm_name }} >/dev/null && echo started
+    fi
+  args: {executable: /bin/bash}
+  register: vm_started
+  changed_when: "'started' in vm_started.stdout"
+  when: not ansible_check_mode
+
+- name: Wait for SSH on the static address
+  ansible.builtin.wait_for:
+    host: "{{ vm_ip }}"
+    port: 22
+    timeout: 600
+    delay: 15
+  delegate_to: localhost
+  become: false
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "Rocky VM up: ssh -i {{ ssh_key_path }} {{ vm_user }}@{{ vm_ip }}"
