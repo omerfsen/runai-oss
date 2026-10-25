@@ -39,7 +39,8 @@ gpu_pci_ids:
   - "0000:01:00.0"
   - "0000:01:00.1"
 # permanent: the GPU VM owns the GPU from boot (the host and k3d lose it);
-# off: back to the host. Each switch needs one host reboot.
+# "off" (quoted, or YAML reads it as false): back to the host, both VMs stop
+# autostarting. Each switch needs one host reboot.
 gpu_passthrough_mode: permanent
 
 # ── Point the shared roles at RKE2, keep system services off the GPU node ─

@@ -23,6 +23,15 @@
       vars:
         vm_name: "{{ gpu_vm_name }}"
   tasks:
+    # off mode already stops the GPU VM from autostarting (gpu_passthrough).
+    # Without its GPU node the control-plane VM only holds 20 vCPUs and 40 GB
+    # of the host, so it stays down too; permanent mode re-enables both.
+    - name: Keep the control-plane VM from starting at boot
+      ansible.builtin.command: virsh autostart --disable {{ cp_vm_name }}
+      changed_when: false
+      failed_when: false          # the VM may not exist
+      when: gpu_passthrough_mode == 'off'
+
     - name: Create the control-plane VM (no GPU)
       ansible.builtin.include_role:
         name: rocky_vm

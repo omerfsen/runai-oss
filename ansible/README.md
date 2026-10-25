@@ -58,7 +58,7 @@ CONTEXT=rke2-runai-cp ../labs/run.sh
 ```
 
 While the GPU is passed through, the host (and the k3d track) has no GPU and
-the monitor on the NVIDIA card is dark. Back: `gpu_passthrough_mode: off` in
+the monitor on the NVIDIA card is dark. Back: `gpu_passthrough_mode: "off"` (quoted: bare `off` is YAML for false) in
 `vm.local.yml`, `vm-host.yml`, reboot.
 
 ## Switches

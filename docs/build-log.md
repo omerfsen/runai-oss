@@ -824,6 +824,14 @@ don't pass the keyboard through.
 Also on the k3d side: the CUDA node images moved from a private registry to
 a public Docker Hub repository, so readers can pull instead of build.
 
+Then back to normal mode, and one more YAML trap: `gpu_passthrough_mode: off`
+reached the playbook as the boolean `false` (YAML 1.1 reads bare
+`on`/`off`/`yes`/`no` as booleans), so the mode check failed before anything
+changed. It has to be written `"off"`; the check now says so when it sees a
+boolean. Off mode also turns autostart off for both VMs now, not only the GPU
+VM: without its GPU node the control-plane VM would just hold 20 vCPUs and
+40 GB of the host.
+
 ---
 
 ## Next
