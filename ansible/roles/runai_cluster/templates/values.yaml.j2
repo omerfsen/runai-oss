@@ -1,0 +1,21 @@
+{{ ansible_managed | comment }}
+# Run:ai cluster ({{ runai_version }}), chart runai-oss/runai-cluster.
+# cluster.uid and the one-time bootstrap token come from registering the
+# cluster with the control plane's REST API; the token is passed with --set
+# and never written to disk.
+
+controlPlane:
+  url: https://{{ runai_fqdn }}
+  clientID: runai-internal.installer
+
+cluster:
+  url: https://{{ runai_fqdn }}          # same Kubernetes cluster as the control plane
+
+global:
+  customCA:
+    enabled: true                          # trust the self-signed CA (secret runai-ca-cert)
+
+clusterConfig:
+  global:
+    ingress:
+      ingressClass: traefik

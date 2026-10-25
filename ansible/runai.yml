@@ -1,0 +1,40 @@
+---
+# Part 3: NVIDIA Run:ai (open source) on the k3d cluster from cluster.yml.
+#
+#   ansible-playbook runai.yml
+#
+# Admin password: $RUNAI_ADMIN_PASSWORD, or a random one generated once into
+# runai_admin_password_file (outside the repo). Login: https://<runai_domain>
+- name: Install Run:ai
+  hosts: workstation
+  become: false
+  gather_facts: true
+  pre_tasks:
+    - name: Work out the host address
+      ansible.builtin.include_role:
+        name: k3d_cluster
+        tasks_from: host_ip
+
+    - name: Pick the Run:ai domain
+      ansible.builtin.set_fact:
+        runai_fqdn: "{{ runai_domain if runai_domain | length > 0 else 'runai.' ~ (cluster_ip | replace('.', '-')) ~ '.nip.io' }}"
+
+    - name: Check the add-ons Run:ai builds on
+      ansible.builtin.command: >-
+        kubectl --context k3d-{{ cluster_name }} get deploy -A
+        -o jsonpath='{.items[*].metadata.name}'
+      register: deployments
+      changed_when: false
+      check_mode: false
+
+    - name: Require GPU Operator and cert-manager
+      ansible.builtin.assert:
+        that:
+          - "'gpu-operator' in deployments.stdout.split()"
+          - "'cert-manager' in deployments.stdout.split()"
+        fail_msg: Run cluster.yml with install_gpu_operator and install_cert_manager first.
+  roles:
+    - role: prometheus
+    - role: runai_tls
+    - role: runai_control_plane
+    - role: runai_cluster

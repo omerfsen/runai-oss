@@ -1,0 +1,14 @@
+---
+# Part 1: the workstation's NVIDIA driver and container toolkit.
+#
+#   ansible-playbook host.yml --check   # dry run
+#   ansible-playbook host.yml           # may stop and ask for one reboot
+#
+# Ubuntu 24.04 with Secure Boot. Ends with nvidia-smi working on the host and
+# inside a CUDA container.
+- name: Prepare the workstation's GPU
+  hosts: workstation
+  become: true
+  gather_facts: true
+  roles:
+    - nvidia_host

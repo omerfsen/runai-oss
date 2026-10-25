@@ -1,0 +1,29 @@
+# team-b owns 0.5 GPU. Two plain (non-preemptible) half-GPU pods: the first
+# fills the quota, the second is refused although half the card is idle.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: np-first
+  namespace: runai-team-b
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: np-second
+  namespace: runai-team-b
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]

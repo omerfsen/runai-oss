@@ -1,0 +1,13 @@
+---
+# Deletes the k3d cluster. The node image and the host driver stay.
+#
+#   ansible-playbook teardown.yml
+- name: Delete the k3d cluster
+  hosts: workstation
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Delete the cluster
+      ansible.builtin.command: k3d cluster delete {{ cluster_name }}
+      register: delete
+      changed_when: "'Successfully deleted' in (delete.stdout ~ delete.stderr)"

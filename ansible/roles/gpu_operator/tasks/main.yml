@@ -1,0 +1,76 @@
+---
+# Run:ai needs the GPU Operator for node labels (NFD, GPU feature discovery)
+# and metrics (DCGM exporter). On k3d it runs without driver, toolkit and
+# device plugin: see templates/values.yaml.j2.
+
+- name: Render the values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /tmp/gpu-operator-values.yaml
+    mode: "0644"
+
+- name: Read the deployed release
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n gpu-operator
+    list --filter '^gpu-operator$' -o json
+  register: gpu_release
+  changed_when: false
+  check_mode: false
+
+- name: Read its values
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n gpu-operator
+    get values gpu-operator -o json
+  register: gpu_values
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# helm upgrade always reports "upgraded"; only run it when the chart version
+# or the values differ from what is deployed.
+- name: helm upgrade -i gpu-operator {{ gpu_operator_version }}
+  when: >-
+    gpu_release.stdout | from_json | selectattr('status', 'equalto', 'deployed')
+    | selectattr('chart', 'equalto', 'gpu-operator-' ~ gpu_operator_version) | list | length == 0
+    or gpu_values.rc != 0
+    or (gpu_values.stdout | from_json) != (lookup('ansible.builtin.template', 'values.yaml.j2') | from_yaml)
+  block:
+    - name: Add the NVIDIA Helm repo
+      ansible.builtin.command: helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
+      changed_when: false
+
+    - name: Install or upgrade it
+      ansible.builtin.command: >-
+        helm upgrade -i gpu-operator nvidia/gpu-operator
+        --kube-context k3d-{{ cluster_name }}
+        -n gpu-operator --create-namespace
+        --version {{ gpu_operator_version }}
+        -f /tmp/gpu-operator-values.yaml
+        --wait --timeout 10m
+      changed_when: true
+      when: not ansible_check_mode
+
+# The validator runs a CUDA sample on the GPU; Completed means a pod really
+# got the GPU through the operator's stack.
+- name: Wait for the CUDA validator
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} -n gpu-operator get pods
+    -l app=nvidia-cuda-validator -o jsonpath='{.items[*].status.phase}'
+  register: cuda_validator
+  until: "'Succeeded' in cuda_validator.stdout"
+  retries: 40
+  delay: 6
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Read the GPU product label
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} get nodes
+    -o jsonpath='{.items[0].metadata.labels.nvidia\.com/gpu\.product}'
+  register: gpu_product
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "GPU Operator up, CUDA validator passed, node GPU: {{ gpu_product.stdout | default('n/a') }}"

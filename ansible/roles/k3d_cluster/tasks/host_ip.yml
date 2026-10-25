@@ -1,0 +1,25 @@
+---
+# The host address ports 80/443 bind to (and Run:ai's nip.io domain is built from).
+- name: Work out the host address for ports 80/443
+  ansible.builtin.shell: |
+    set -o pipefail
+    # First physical, wired, up NIC with an IPv4 address...
+    for dev in /sys/class/net/*; do
+      [ -e "$dev/device" ] || continue
+      case "$(basename "$dev")" in wl*) continue ;; esac
+      [ "$(cat "$dev/operstate" 2>/dev/null)" = up ] || continue
+      ip=$(ip -4 -o addr show "$(basename "$dev")" | awk '{print $4}' | cut -d/ -f1 | head -1)
+      [ -n "$ip" ] && { echo "$ip"; exit 0; }
+    done
+    # ...else whatever carries the default route. A NIC enslaved to a bridge
+    # (br1 here) has no address of its own; the bridge does.
+    ip -4 route get 1.1.1.1 | grep -oP 'src \K[0-9.]+'
+  args: {executable: /bin/bash}
+  register: detected_ip
+  changed_when: false
+  check_mode: false
+  when: host_ip | length == 0
+
+- name: Use it
+  ansible.builtin.set_fact:
+    cluster_ip: "{{ host_ip if host_ip | length > 0 else detected_ip.stdout }}"

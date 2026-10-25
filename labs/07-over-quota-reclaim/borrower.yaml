@@ -1,0 +1,21 @@
+# team-a (quota 0.5) takes the whole GPU while nobody else needs it. A plain
+# Job is low priority and preemptible, so it may borrow team-b's half.
+# backoffLimit > 0: when Run:ai reclaims the GPU, the Job makes a new pod that
+# waits for room instead of failing.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: borrower
+  namespace: runai-team-a
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: cuda
+          image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+          command: [bash, -c, "nvidia-smi -L; sleep 3600"]
+          resources:
+            limits:
+              nvidia.com/gpu: 1

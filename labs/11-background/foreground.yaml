@@ -1,0 +1,14 @@
+# Real work: team-a uses half the GPU it owns.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foreground
+  namespace: runai-team-a
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]

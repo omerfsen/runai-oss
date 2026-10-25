@@ -1,0 +1,49 @@
+---
+# kube-prometheus-stack: Run:ai creates its own Prometheus on top of the
+# operator and reads GPU metrics through it.
+
+- name: Render the values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /tmp/kube-prometheus-stack-values.yaml
+    mode: "0644"
+
+- name: Read the deployed release
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n monitoring
+    list --filter '^prometheus$' -o json
+  register: prom_release
+  changed_when: false
+  check_mode: false
+
+- name: Read its values
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n monitoring
+    get values prometheus -o json
+  register: prom_values
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Run helm only when the chart version or the values differ from what is deployed.
+- name: helm upgrade -i prometheus {{ prometheus_stack_version }}
+  when: >-
+    prom_release.stdout | from_json | selectattr('status', 'equalto', 'deployed')
+    | selectattr('chart', 'equalto', 'kube-prometheus-stack-' ~ prometheus_stack_version) | list | length == 0
+    or prom_values.rc != 0
+    or (prom_values.stdout | from_json) != (lookup('ansible.builtin.template', 'values.yaml.j2') | from_yaml)
+  block:
+    - name: Add the prometheus-community Helm repo
+      ansible.builtin.command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+      changed_when: false
+
+    - name: Install or upgrade it
+      ansible.builtin.command: >-
+        helm upgrade -i prometheus prometheus-community/kube-prometheus-stack
+        --kube-context k3d-{{ cluster_name }}
+        -n monitoring --create-namespace
+        --version {{ prometheus_stack_version }}
+        -f /tmp/kube-prometheus-stack-values.yaml
+        --wait --timeout 10m
+      changed_when: true
+      when: not ansible_check_mode

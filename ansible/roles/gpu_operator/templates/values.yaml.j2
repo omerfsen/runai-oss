@@ -1,0 +1,32 @@
+{{ ansible_managed | comment }}
+# NVIDIA GPU Operator {{ gpu_operator_version }}
+# Full defaults: helm show values nvidia/gpu-operator --version {{ gpu_operator_version }}
+
+driver:
+  # false (k3d): the host's driver is used. The node is a container sharing the
+  # host kernel, and on a Secure Boot host the operator's modules would be
+  # rejected anyway. true: real nodes with no host driver only.
+  enabled: {{ gpu_operator_install_driver | bool | lower }}
+
+toolkit:
+  # The node image already ships the container toolkit and k3s registers the
+  # nvidia runtime. When the operator owns the driver it owns the toolkit too.
+  enabled: {{ gpu_operator_install_driver | bool | lower }}
+{% if gpu_operator_install_driver | bool %}
+  env:
+    - name: CONTAINERD_CONFIG
+      value: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+    - name: CONTAINERD_SOCKET
+      value: /run/k3s/containerd/containerd.sock
+{% endif %}
+
+devicePlugin:
+  # The node image deploys its own device plugin from the k3s manifests
+  # directory; two on one node conflict.
+  enabled: {{ gpu_operator_install_driver | bool | lower }}
+
+cdi:
+  # Classic runtime injection; CDI specs come from the operator's toolkit.
+  enabled: false
+  # Run:ai GPU fractions do not work while the NRI plugin is on (memory-fractions.md).
+  nriPluginEnabled: false

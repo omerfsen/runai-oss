@@ -1,0 +1,44 @@
+# TensorFlow on the GPU, including cuDNN (conv2d).
+#
+# The official tensorflow/tensorflow:2.21.0-gpu image is broken: TF 2.21 is
+# built against cuDNN 9 but the image ships cuDNN 8.9.6, so cuDNN fails to
+# load ("Cannot dlopen some GPU libraries", CUDNN_STATUS_INTERNAL_ERROR) and
+# TF silently falls back to CPU. Installing cuDNN 9 from pip fixes it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-tensorflow
+  namespace: runai-oss-tests
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: tensorflow/tensorflow:2.21.0-gpu
+          env:
+            - name: TF_CPP_MIN_LOG_LEVEL
+              value: "2"
+          command: [bash, -c]
+          args:
+            - |
+              set -e
+              pip install -q --no-cache-dir --root-user-action=ignore nvidia-cudnn-cu12==9.27.0.42
+              python3 - <<'EOF'
+              import tensorflow as tf
+              gpus = tf.config.list_physical_devices("GPU")
+              assert gpus, "TensorFlow sees no GPU"
+              info = tf.sysconfig.get_build_info()
+              print("TensorFlow", tf.__version__, "| CUDA", info["cuda_version"], "| cuDNN", info["cudnn_version"])
+              with tf.device("/GPU:0"):
+                  x = tf.random.normal([8, 128, 128, 3])
+                  k = tf.random.normal([3, 3, 3, 16])
+                  y = tf.nn.conv2d(x, k, 1, "SAME")          # cuDNN
+                  z = tf.matmul(tf.random.normal([1024, 1024]), tf.random.normal([1024, 1024]))
+              assert "GPU" in y.device and "GPU" in z.device
+              print("PASS: conv2d", y.shape, "and matmul ran on", y.device)
+              EOF
+          resources:
+            limits:
+              nvidia.com/gpu: 1

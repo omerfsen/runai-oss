@@ -1,0 +1,158 @@
+---
+# Certificates for Run:ai from a self-signed CA in cert-manager:
+#   runai-backend/runai-backend-tls              control plane UI/API (FQDN + wildcard)
+#   runai/runai-cluster-domain-tls-secret        cluster FQDN
+#   runai/runai-cluster-domain-star-tls-secret   *.FQDN for workspaces
+#   runai-backend|runai/runai-ca-cert            the CA, key runai-ca.pem (global.customCA)
+# plus the wildcard Ingress Run:ai expects in the runai namespace.
+
+- name: Create the namespaces
+  ansible.builtin.command:
+    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    stdin: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: runai-backend
+      ---
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: runai
+        labels:
+          # Run:ai's cluster components need privileged pods on Kubernetes.
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: privileged
+          pod-security.kubernetes.io/warn: privileged
+  register: ns_apply
+  changed_when: "' created' in ns_apply.stdout or ' configured' in ns_apply.stdout"
+
+- name: Create the CA and the certificates
+  ansible.builtin.command:
+    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    stdin: |
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: runai-selfsigned
+      spec:
+        selfSigned: {}
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: runai-ca
+        namespace: cert-manager
+      spec:
+        isCA: true
+        commonName: runai-oss lab CA
+        secretName: runai-ca
+        duration: 87600h          # 10 years: a lab CA, never a production one
+        privateKey: {algorithm: ECDSA, size: 256}
+        issuerRef: {name: runai-selfsigned, kind: ClusterIssuer}
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: runai-ca
+      spec:
+        ca:
+          secretName: runai-ca    # read from the cert-manager namespace
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: runai-backend-tls
+        namespace: runai-backend
+      spec:
+        secretName: runai-backend-tls
+        dnsNames: ["{{ runai_fqdn }}", "*.{{ runai_fqdn }}"]
+        issuerRef: {name: runai-ca, kind: ClusterIssuer}
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: runai-cluster-domain-tls
+        namespace: runai
+      spec:
+        secretName: runai-cluster-domain-tls-secret
+        dnsNames: ["{{ runai_fqdn }}"]
+        issuerRef: {name: runai-ca, kind: ClusterIssuer}
+      ---
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: runai-cluster-domain-star-tls
+        namespace: runai
+      spec:
+        secretName: runai-cluster-domain-star-tls-secret
+        dnsNames: ["*.{{ runai_fqdn }}"]
+        issuerRef: {name: runai-ca, kind: ClusterIssuer}
+  register: cert_apply
+  changed_when: "' created' in cert_apply.stdout or ' configured' in cert_apply.stdout"
+
+- name: Wait for the certificates
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} -n {{ item.ns }}
+    wait --for=condition=Ready certificate/{{ item.name }} --timeout=120s
+  loop:
+    - {ns: cert-manager, name: runai-ca}
+    - {ns: runai-backend, name: runai-backend-tls}
+    - {ns: runai, name: runai-cluster-domain-tls}
+    - {ns: runai, name: runai-cluster-domain-star-tls}
+  loop_control: {label: "{{ item.ns }}/{{ item.name }}"}
+  changed_when: false
+
+- name: Read the CA certificate
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} -n cert-manager
+    get secret runai-ca -o jsonpath='{.data.ca\.crt}'
+  register: ca_b64
+  changed_when: false
+
+# Run:ai's customCA mounts secret runai-ca-cert, key runai-ca.pem.
+- name: Publish the CA as runai-ca-cert
+  ansible.builtin.command:
+    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: runai-ca-cert
+        namespace: {{ item }}
+      data:
+        runai-ca.pem: {{ ca_b64.stdout }}
+  loop: [runai-backend, runai]
+  register: ca_apply
+  changed_when: "'unchanged' not in ca_apply.stdout"
+
+- name: Create the wildcard Ingress for workloads
+  ansible.builtin.command:
+    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    stdin: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: runai-cluster-domain-star-ingress
+        namespace: runai
+      spec:
+        ingressClassName: traefik
+        rules:
+          - host: "*.{{ runai_fqdn }}"
+        tls:
+          - hosts: ["*.{{ runai_fqdn }}"]
+            secretName: runai-cluster-domain-star-tls-secret
+  register: star_apply
+  changed_when: "'unchanged' not in star_apply.stdout"
+
+- name: Create the local config directory
+  ansible.builtin.file:
+    path: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/runai-oss"
+    state: directory
+    mode: "0700"
+
+- name: Save the CA for browsers and the runai CLI
+  ansible.builtin.copy:
+    dest: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/runai-oss/runai-ca.pem"
+    content: "{{ ca_b64.stdout | b64decode }}"
+    mode: "0644"

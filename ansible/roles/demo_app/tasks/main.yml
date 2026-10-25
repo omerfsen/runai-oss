@@ -1,0 +1,37 @@
+---
+# nginx behind Traefik with a plain Ingress: proves the ingress path end to end.
+
+- name: Apply the demo app
+  ansible.builtin.command:
+    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    stdin: "{{ lookup('ansible.builtin.template', 'demo.yaml.j2') }}"
+  register: demo_apply
+  changed_when: "' created' in demo_apply.stdout or ' configured' in demo_apply.stdout"
+  when: not ansible_check_mode
+
+- name: Wait for it
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} -n demo rollout status deploy/demo --timeout=120s
+  changed_when: false
+  when: not ansible_check_mode
+
+# Ask Traefik on the host address for the demo host name, the way a browser
+# would once DNS points there.
+- name: Reach it through Traefik
+  ansible.builtin.uri:
+    url: "http://{{ cluster_ip }}/"
+    headers:
+      Host: "{{ demo_host }}"
+    return_content: true
+  register: demo_http
+  until: demo_http.status == 200
+  retries: 20
+  delay: 3
+  when: demo_host | length > 0 and not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('Demo answers through Traefik: http://' ~ demo_host ~ ' (HTTP ' ~ demo_http.status ~ ')')
+         if demo_host | length > 0 and demo_http.status is defined else
+         'Demo running without an Ingress: kubectl -n demo port-forward svc/demo 8080:80' }}

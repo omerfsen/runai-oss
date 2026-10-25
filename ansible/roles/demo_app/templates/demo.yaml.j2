@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-page
+  namespace: demo
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head><meta charset="utf-8"><title>{{ cluster_name }} is up</title>
+    <style>
+      body{margin:0;min-height:100vh;display:grid;place-items:center;
+           font:16px/1.5 system-ui,sans-serif;background:#0f172a;color:#e2e8f0}
+      main{max-width:40rem;padding:2rem}
+      h1{margin:0 0 .5rem;font-size:2rem}
+      code{display:block;background:#1e293b;padding:1rem;border-radius:.5rem;white-space:pre}
+    </style></head>
+    <body><main>
+      <h1>{{ cluster_name }} is up</h1>
+      <p>k3s {{ k3s_version }}, served by nginx through Traefik.</p>
+      <code>kubectl get pods -A
+    kubectl get ingress -A
+    kubectl get certificate -A</code>
+    </main></body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: demo}
+  template:
+    metadata:
+      labels: {app: demo}
+    spec:
+      containers:
+        - name: web
+          image: {{ demo_image }}
+          ports: [{containerPort: 80}]
+          volumeMounts: [{name: page, mountPath: /usr/share/nginx/html}]
+      volumes:
+        - name: page
+          configMap: {name: demo-page}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  selector: {app: demo}
+  ports: [{port: 80, targetPort: 80}]
+{% if demo_host | length > 0 %}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo
+  namespace: demo
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+{% if letsencrypt_email | length > 0 and install_cert_manager | bool %}
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+{% endif %}
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [{{ demo_host }}]
+      secretName: demo-tls
+  rules:
+    - host: {{ demo_host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: demo, port: {number: 80}}
+{% endif %}

@@ -1,0 +1,131 @@
+---
+# Run:ai cluster: register it with the control plane through the REST API
+# (no UI wizard), then install chart runai-oss/runai-cluster with the cluster
+# UID and a one-time bootstrap token. Same flow as the repo's local-dev.sh.
+
+- name: Read the deployed release
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n runai
+    list --filter '^runai-cluster$' -o json
+  register: rc_release
+  changed_when: false
+  check_mode: false
+
+- name: Get an API token for the admin
+  ansible.builtin.uri:
+    url: "https://{{ runai_fqdn }}/api/v1/token"
+    method: POST
+    body_format: json
+    # No clientID: with "runai-cli" the endpoint answers 502, with
+    # "runai-admin-ui" 400. The plain password grant works.
+    body:
+      grantType: password
+      username: "{{ runai_admin_username }}"
+      password: "{{ runai_admin_password }}"
+    validate_certs: false
+  register: api_token
+  until: api_token.status == 200
+  retries: 30
+  delay: 10
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Register and install the cluster
+  when: >-
+    not ansible_check_mode and
+    rc_release.stdout | from_json | selectattr('status', 'equalto', 'deployed')
+    | selectattr('chart', 'equalto', 'runai-cluster-' ~ runai_version) | list | length == 0
+  block:
+    - name: Look for an existing registration
+      ansible.builtin.uri:
+        url: "https://{{ runai_fqdn }}/v1/k8s/clusters"
+        headers: {Authorization: "Bearer {{ api_token.json.accessToken }}"}
+        validate_certs: false
+      register: clusters
+      no_log: true            # the request carries the admin bearer token
+
+    - name: Register the cluster
+      ansible.builtin.uri:
+        url: "https://{{ runai_fqdn }}/v1/k8s/clusters"
+        method: POST
+        headers: {Authorization: "Bearer {{ api_token.json.accessToken }}"}
+        body_format: json
+        body: {name: "{{ runai_cluster_name }}"}
+        status_code: [200, 201, 202]
+        validate_certs: false
+      register: registered
+      no_log: true            # the request carries the admin bearer token
+      when: clusters.json | selectattr('name', 'equalto', runai_cluster_name) | list | length == 0
+      changed_when: true
+
+    - name: Remember the cluster UID
+      ansible.builtin.set_fact:
+        runai_cluster_uid: >-
+          {{ registered.json.uuid if registered.json is defined
+             else (clusters.json | selectattr('name', 'equalto', runai_cluster_name) | first).uuid }}
+
+    # One-time token; minted fresh on every call.
+    - name: Get a bootstrap token for the installer
+      ansible.builtin.uri:
+        url: "https://{{ runai_fqdn }}/api/v1/clusters/{{ runai_cluster_uid }}/cluster-install-info?version={{ runai_version }}"
+        headers: {Authorization: "Bearer {{ api_token.json.accessToken }}"}
+        validate_certs: false
+      register: install_info
+      until: install_info.status == 200 and install_info.json.bootstrapToken | default('') | length > 0
+      retries: 30
+      delay: 10
+      no_log: true
+
+    - name: Render the values file
+      ansible.builtin.template:
+        src: values.yaml.j2
+        dest: /tmp/runai-cluster-values.yaml
+        mode: "0644"
+
+    - name: Add the runai-oss Helm repo
+      ansible.builtin.command: helm repo add runai-oss https://helm.ngc.nvidia.com/nvidia/runai-oss --force-update
+      changed_when: false
+
+    # Post-install hooks validate queue versions and can take several minutes.
+    - name: helm upgrade -i runai-cluster {{ runai_version }}
+      # The token goes in on stdin (-f -), never on the command line.
+      ansible.builtin.command:
+        cmd: >-
+          helm upgrade -i runai-cluster runai-oss/runai-cluster
+          --kube-context k3d-{{ cluster_name }} -n runai
+          --version {{ runai_version }}
+          -f /tmp/runai-cluster-values.yaml -f -
+          --timeout 20m
+        stdin: |
+          cluster:
+            uid: "{{ runai_cluster_uid }}"
+          controlPlane:
+            bootstrapToken: "{{ install_info.json.bootstrapToken }}"
+      changed_when: true
+      no_log: true
+      when: not ansible_check_mode
+
+# Waiting on deployments alone is not enough: runai-operator creates ~25 more
+# (agent, scheduler, admission...) only after it has pulled its config from the
+# control plane. The control plane's own view is the real signal: state
+# Connected and every operand ready (about 3-5 minutes after the install).
+- name: Wait until the control plane reports the cluster Connected
+  ansible.builtin.uri:
+    url: "https://{{ runai_fqdn }}/v1/k8s/clusters"
+    headers: {Authorization: "Bearer {{ api_token.json.accessToken }}"}
+    validate_certs: false
+  register: cluster_status
+  no_log: true            # the request carries the admin bearer token
+  until: >-
+    (cluster_status.json | selectattr('name', 'equalto', runai_cluster_name) | first).status.state | default('') == 'Connected'
+    and (cluster_status.json | selectattr('name', 'equalto', runai_cluster_name) | first).status.operands
+        | dict2items | rejectattr('value.ready') | list | length == 0
+  retries: 60
+  delay: 15
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      Run:ai cluster {{ runai_cluster_name }} Connected, all operands ready.
+      UI: https://{{ runai_fqdn }}

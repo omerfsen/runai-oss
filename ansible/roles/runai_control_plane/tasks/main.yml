@@ -1,0 +1,147 @@
+---
+# Run:ai control plane: chart runai-oss/control-plane, public repo, no NGC key.
+# It brings its own PostgreSQL, Keycloak, NATS and Thanos. Those start with
+# default credentials: fine for a lab, change them before anything real.
+
+- name: Create the local config directory
+  ansible.builtin.file:
+    path: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/runai-oss"
+    state: directory
+    mode: "0700"
+
+- name: Resolve the password file path
+  ansible.builtin.set_fact:
+    runai_password_path: "{{ runai_admin_password_file | replace('~', lookup('ansible.builtin.env', 'HOME')) }}"
+
+# Run:ai wants 8+ characters with upper, lower, digit and one of -!@#$%^&*()_+=.
+# The fixed "Ra1-" prefix guarantees each class; the rest is random. The file
+# always holds the complete password actually used, so `cat` gives exactly
+# what the UI and labs/lib.sh expect: $RUNAI_ADMIN_PASSWORD, when set, is
+# written there too; otherwise a random one is generated once and kept.
+- name: Store $RUNAI_ADMIN_PASSWORD as the admin password
+  ansible.builtin.copy:
+    dest: "{{ runai_password_path }}"
+    content: "{{ lookup('ansible.builtin.env', 'RUNAI_ADMIN_PASSWORD') }}"
+    mode: "0600"
+  no_log: true
+  when: lookup('ansible.builtin.env', 'RUNAI_ADMIN_PASSWORD') | length > 0
+
+- name: Generate an admin password once
+  ansible.builtin.copy:
+    dest: "{{ runai_password_path }}"
+    content: "Ra1-{{ lookup('ansible.builtin.password', '/dev/null chars=ascii_letters,digits length=20') }}"
+    mode: "0600"
+    force: false              # never overwrite: the deployed password must not change
+  no_log: true
+  when: lookup('ansible.builtin.env', 'RUNAI_ADMIN_PASSWORD') | length == 0
+
+- name: Read the admin password
+  ansible.builtin.set_fact:
+    runai_admin_password: "{{ lookup('ansible.builtin.file', runai_password_path) }}"
+  no_log: true
+
+- name: Render the values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /tmp/runai-control-plane-values.yaml
+    mode: "0644"
+
+# The plan before installing: the rendered values (no password in this file).
+- name: Show the values that will be installed
+  ansible.builtin.command: cat /tmp/runai-control-plane-values.yaml
+  register: cp_values
+  changed_when: false
+  check_mode: false
+
+- name: Values
+  ansible.builtin.debug:
+    msg: "{{ cp_values.stdout_lines | reject('match', '^#') | list }}"
+
+- name: Read the deployed release
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n runai-backend
+    list --filter '^runai-backend$' -o json
+  register: cp_release
+  changed_when: false
+  check_mode: false
+
+- name: Add the runai-oss Helm repo
+  ansible.builtin.command: helm repo add runai-oss https://helm.ngc.nvidia.com/nvidia/runai-oss --force-update
+  changed_when: false
+
+# The password goes to helm on stdin (-f -), never on the command line where
+# ps would show it. Helm still keeps it in its release secret: lab only.
+# A wrong admin password is NOT fixed by a later helm upgrade: the generated
+# secret runai-backend-gen-tenants-manager keeps the first one. To change it,
+# delete that secret and install again.
+- name: helm upgrade -i runai-backend {{ runai_version }}
+  ansible.builtin.command:
+    cmd: >-
+      helm upgrade -i runai-backend runai-oss/control-plane
+      --kube-context k3d-{{ cluster_name }} -n runai-backend
+      --version {{ runai_version }}
+      -f /tmp/runai-control-plane-values.yaml -f -
+      --timeout 20m
+    stdin: |
+      tenantsManager:
+        config:
+          adminPassword: "{{ runai_admin_password }}"
+  changed_when: true
+  no_log: true
+  when: >-
+    not ansible_check_mode and
+    cp_release.stdout | from_json | selectattr('status', 'equalto', 'deployed')
+    | selectattr('chart', 'equalto', 'control-plane-' ~ runai_version) | list | length == 0
+
+- name: Wait for the control plane deployments
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} -n runai-backend
+    wait --for=condition=Available deploy --all --timeout=1200s
+  changed_when: false
+  when: not ansible_check_mode
+
+# The UI can take a while after the pods are up before it answers.
+- name: Wait for the UI through Traefik
+  ansible.builtin.uri:
+    url: "https://{{ runai_fqdn }}/"
+    validate_certs: false
+    status_code: [200]
+  register: ui
+  until: ui.status == 200
+  retries: 60
+  delay: 10
+  when: not ansible_check_mode
+
+# Catches a password file that does not match the deployed control plane
+# (e.g. changed after the first install) before anything else depends on it.
+- name: Check the admin password logs in
+  ansible.builtin.uri:
+    url: "https://{{ runai_fqdn }}/api/v1/token"
+    method: POST
+    body_format: json
+    body: {grantType: password, username: "{{ runai_admin_username }}", password: "{{ runai_admin_password }}"}
+    validate_certs: false
+    status_code: [200, 401, 403]
+  register: login
+  until: login.status in [200, 401, 403]
+  retries: 30
+  delay: 10
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Fail on a wrong admin password
+  ansible.builtin.assert:
+    that: login.status == 200
+    fail_msg: >-
+      The control plane rejects the password in {{ runai_admin_password_file }}
+      (HTTP {{ login.status }}). It keeps the password from its first install
+      (secret runai-backend-gen-tenants-manager): put that one in the file, or
+      delete the secret and run runai.yml again.
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      Control plane up: https://{{ runai_fqdn }} (user {{ runai_admin_username }},
+      password: cat {{ runai_admin_password_file }}).
+      CA for the browser: ~/.config/runai-oss/runai-ca.pem

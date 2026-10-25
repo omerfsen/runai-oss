@@ -1,0 +1,68 @@
+---
+# cert-manager from its Helm chart, plus Let's Encrypt ClusterIssuers when an
+# email is set. HTTP-01 solving goes through Traefik with a plain Ingress.
+# Behind NAT, validation from inside the cluster also needs hairpin NAT on the
+# host for ports 80/443; cert-manager has no setting that replaces it.
+
+- name: Read the deployed cert-manager release
+  ansible.builtin.command: >-
+    helm --kube-context k3d-{{ cluster_name }} -n cert-manager
+    list --filter '^cert-manager$' -o json
+  register: cm_release
+  changed_when: false
+  check_mode: false
+
+- name: helm upgrade -i cert-manager {{ cert_manager_version }}
+  when: >-
+    cm_release.stdout | from_json | selectattr('status', 'equalto', 'deployed')
+    | selectattr('chart', 'equalto', 'cert-manager-' ~ cert_manager_version) | list | length == 0
+  block:
+    - name: Add the Jetstack Helm repo
+      ansible.builtin.command: helm repo add jetstack https://charts.jetstack.io --force-update
+      changed_when: false
+
+    - name: Install or upgrade it
+      ansible.builtin.command: >-
+        helm upgrade -i cert-manager jetstack/cert-manager
+        --kube-context k3d-{{ cluster_name }}
+        -n cert-manager --create-namespace
+        --version {{ cert_manager_version }}
+        --set crds.enabled=true
+        --wait --timeout 5m
+      changed_when: true
+      when: not ansible_check_mode
+
+- name: Create the Let's Encrypt ClusterIssuers
+  ansible.builtin.command:
+    cmd: kubectl --context k3d-{{ cluster_name }} apply -f -
+    stdin: |
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: letsencrypt-{{ item.name }}
+      spec:
+        acme:
+          server: {{ item.server }}
+          email: {{ letsencrypt_email }}
+          privateKeySecretRef:
+            name: letsencrypt-{{ item.name }}-account-key
+          solvers:
+            - http01:
+                ingress:
+                  ingressClassName: traefik
+  loop:
+    - {name: prod, server: "https://acme-v02.api.letsencrypt.org/directory"}
+    - {name: staging, server: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+  loop_control: {label: "letsencrypt-{{ item.name }}"}
+  register: issuers
+  changed_when: "'unchanged' not in issuers.stdout"
+  when: letsencrypt_email | length > 0 and not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      cert-manager {{ cert_manager_version }} running.
+      {{ 'ClusterIssuers letsencrypt-prod and letsencrypt-staging created; behind NAT, ACME
+      validation from inside needs hairpin NAT for ports 80/443.'
+      if letsencrypt_email | length > 0 else
+      'No letsencrypt_email set, so no ACME issuers.' }}

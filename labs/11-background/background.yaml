@@ -1,0 +1,29 @@
+# Opportunistic work (batch embeddings, data prep, a test run...) in project
+# "batch", which has NO quota: it only ever uses GPUs nobody else needs.
+# Rules (docs: background-workloads.md): label kai.scheduler/background,
+# preemptible, whole GPUs only, short grace period, and a controller that
+# recreates the pod after each eviction (Deployment).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: background
+  namespace: runai-batch
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: background}
+  template:
+    metadata:
+      labels:
+        app: background
+        kai.scheduler/background: "true"
+        kai.scheduler/preemptibility: preemptible
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: cuda
+          image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+          command: [bash, -c, "nvidia-smi -L; sleep infinity"]
+          resources:
+            limits:
+              nvidia.com/gpu: 1

@@ -1,0 +1,21 @@
+# A whole GPU, the classic way: nvidia.com/gpu: 1. No schedulerName and no
+# queue label needed: the namespace makes runai-scheduler pick it up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: whole-gpu
+  namespace: runai-team-a
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: cuda
+          image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+          command: [bash, -c]
+          args:
+            - nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; sleep 20
+          resources:
+            limits:
+              nvidia.com/gpu: 1

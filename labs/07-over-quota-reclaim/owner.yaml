@@ -1,0 +1,15 @@
+# team-b asks for the half it owns. The card is busy with team-a's borrowed
+# job, so Run:ai reclaims: it evicts team-a's preemptible pod.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: owner
+  namespace: runai-team-b
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]

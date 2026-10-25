@@ -1,0 +1,15 @@
+# Same project, same half GPU, higher priority.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: high-prio
+  namespace: runai-team-a
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  priorityClassName: build            # 100: non-preemptible by default
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "sleep 3600"]

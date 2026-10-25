@@ -1,0 +1,14 @@
+{{ ansible_managed | comment }}
+# kube-prometheus-stack {{ prometheus_stack_version }} for Run:ai (needs 88.6.5+).
+# Run:ai creates its own Prometheus instance on top of this operator.
+
+grafana:
+  enabled: false        # Run:ai has its own dashboards
+alertmanager:
+  enabled: false
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors/PodMonitors from every release, not only this
+    # chart's (GPU Operator's DCGM exporter, Run:ai's own components).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false

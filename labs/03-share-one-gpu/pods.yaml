@@ -1,0 +1,47 @@
+# Two teams, one GPU: half each. A third half (preemptible, so it may
+# borrow over team-b's quota) has no room left until one finishes.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: share-a
+  namespace: runai-team-a
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: share-b
+  namespace: runai-team-b
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: share-c
+  namespace: runai-team-b
+  labels:
+    # Preemptible may run over the project's quota (borrowing). A plain pod
+    # is non-preemptible and would be refused over quota (see Lab 06).
+    kai.scheduler/preemptibility: preemptible
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]

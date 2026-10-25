@@ -1,0 +1,78 @@
+# Traefik serves a plain `kind: Ingress` (ingressClassName: traefik). Deploys
+# its own nginx, Service and Ingress, then asks Traefik for that host name.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-test-page
+  namespace: runai-oss-tests
+data:
+  index.html: ingress-test-ok
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-test
+  namespace: runai-oss-tests
+spec:
+  selector:
+    matchLabels: {app: ingress-test}
+  template:
+    metadata:
+      labels: {app: ingress-test}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.31.8-alpine
+          ports: [{containerPort: 80}]
+          volumeMounts: [{name: page, mountPath: /usr/share/nginx/html}]
+      volumes:
+        - name: page
+          configMap: {name: ingress-test-page}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress-test
+  namespace: runai-oss-tests
+spec:
+  selector: {app: ingress-test}
+  ports: [{port: 80, targetPort: 80}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-test
+  namespace: runai-oss-tests
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: ingress-test.runai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: ingress-test, port: {number: 80}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ingress-traefik
+  namespace: runai-oss-tests
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: curlimages/curl:8.23.0
+          command: [sh, -c]
+          args:
+            - |
+              for i in $(seq 1 40); do
+                body=$(curl -fsS -H 'Host: ingress-test.runai.local' http://traefik.kube-system.svc/ 2>/dev/null) || true
+                [ "$body" = ingress-test-ok ] && { echo "PASS: Traefik routed the Ingress (try $i)"; exit 0; }
+                sleep 3
+              done
+              echo "FAIL: no answer through Traefik for ingress-test.runai.local"; exit 1

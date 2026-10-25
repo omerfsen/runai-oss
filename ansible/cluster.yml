@@ -1,0 +1,23 @@
+---
+# Part 2: a single-node k3d cluster on the workstation, with the GPU.
+#
+#   ansible-playbook cluster.yml
+#   ansible-playbook cluster.yml -e install_demo=false -e gpus=0
+#
+# Runs as your user (needs the docker group), not root: k3d writes the
+# kubeconfig to ~/.kube/config. Each add-on has its own switch in
+# group_vars/all.yml.
+- name: Create the k3d cluster and its add-ons
+  hosts: workstation
+  become: false
+  gather_facts: true
+  roles:
+    - role: node_image
+      when: gpus | string != '0'
+    - k3d_cluster
+    - role: gpu_operator
+      when: install_gpu_operator | bool and gpus | string != '0'
+    - role: cert_manager
+      when: install_cert_manager | bool
+    - role: demo_app
+      when: install_demo | bool

@@ -1,0 +1,62 @@
+---
+# The k3s node image with NVIDIA's container toolkit on top (k3d's CUDA guide
+# pattern), built locally: k3d creates the cluster straight from the local
+# Docker image, so no registry is involved. No driver libraries go into the
+# image; `--gpus` injects the host's at runtime.
+
+- name: Is the image already built?
+  ansible.builtin.command: docker image inspect {{ node_image }}
+  register: image_inspect
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Build the image
+  when: image_inspect.rc != 0 or node_image_rebuild | bool
+  block:
+    - name: Create a build context
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: node-image
+      register: build_dir
+
+    - name: Copy the Dockerfile
+      ansible.builtin.copy:
+        src: Dockerfile
+        dest: "{{ build_dir.path }}/Dockerfile"
+        mode: "0644"
+
+    # k3s applies everything in its manifests directory on start, so the
+    # device plugin comes up with the node.
+    - name: Render the device plugin manifest
+      ansible.builtin.template:
+        src: device-plugin-daemonset.yaml.j2
+        dest: "{{ build_dir.path }}/device-plugin-daemonset.yaml"
+        mode: "0644"
+
+    - name: docker build {{ node_image }}
+      ansible.builtin.command: >-
+        docker build
+        --build-arg K3S_TAG={{ k3s_version }}
+        --build-arg CUDA_TAG={{ cuda_tag }}
+        --build-arg NVIDIA_CTK_VERSION={{ nvidia_ctk_version }}
+        -t {{ node_image }} {{ build_dir.path }}
+      changed_when: true
+
+  always:
+    - name: Remove the build context
+      ansible.builtin.file:
+        path: "{{ build_dir.path }}"
+        state: absent
+      when: build_dir.path is defined
+
+- name: Check the image sees the GPU
+  ansible.builtin.command: >-
+    docker run --rm --gpus all --entrypoint nvidia-smi {{ node_image }} -L
+  register: image_gpu
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ node_image }}: {{ image_gpu.stdout | default('skipped in check mode') }}"

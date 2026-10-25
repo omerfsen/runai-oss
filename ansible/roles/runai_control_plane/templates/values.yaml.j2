@@ -1,0 +1,22 @@
+{{ ansible_managed | comment }}
+# Run:ai control plane ({{ runai_version }}), chart runai-oss/control-plane.
+# The admin password is NOT in this file: the role passes it with --set from
+# the RUNAI_ADMIN_PASSWORD environment variable at install time.
+
+global:
+  domain: {{ runai_fqdn }}                  # an FQDN; an IP is not accepted
+  config:
+    kubernetesDistribution: kubernetes
+  ingress:
+    # The chart documents nginx and haproxy; Traefik works with plain Ingress
+    # objects. Controller-specific annotations are only added for nginx/haproxy.
+    ingressClass: traefik
+    tlsSecretName: runai-backend-tls          # created by the runai_tls role
+  customCA:
+    # The certificate comes from a self-signed CA (cert-manager), so every
+    # component has to trust it: secret runai-ca-cert, key runai-ca.pem.
+    enabled: true
+
+tenantsManager:
+  config:
+    adminUsername: {{ runai_admin_username }}

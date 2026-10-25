@@ -1,0 +1,49 @@
+# cert-manager issues a certificate: a self-signed Issuer, a Certificate, and
+# a Job that mounts the resulting Secret. The pod can't start until the Secret
+# exists, so a passing Job means cert-manager really issued it.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-test
+  namespace: runai-oss-tests
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cert-test
+  namespace: runai-oss-tests
+spec:
+  secretName: cert-test-tls
+  commonName: cert-test.runai.local
+  dnsNames: [cert-test.runai.local]
+  duration: 24h
+  issuerRef:
+    name: selfsigned-test
+    kind: Issuer
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cert-manager
+  namespace: runai-oss-tests
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: curlimages/curl:8.23.0
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              grep -q 'BEGIN CERTIFICATE' /tls/tls.crt
+              grep -q 'PRIVATE KEY' /tls/tls.key
+              echo "PASS: cert-manager issued cert-test-tls ($(wc -c < /tls/tls.crt) byte certificate)"
+          volumeMounts: [{name: tls, mountPath: /tls, readOnly: true}]
+      volumes:
+        - name: tls
+          secret: {secretName: cert-test-tls}

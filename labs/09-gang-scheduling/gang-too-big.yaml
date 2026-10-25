@@ -1,0 +1,46 @@
+# Two workers that only make sense together (think: distributed training).
+# Each wants 0.6 GPU; one would fit on the card, both cannot. With a gang
+# (minMember: 2) NEITHER starts: no half-started job holding a GPU hostage.
+apiVersion: scheduling.run.ai/v2alpha2
+kind: PodGroup
+metadata:
+  name: trainers
+  namespace: runai-team-a
+spec:
+  minMember: 2
+  queue: team-a
+  priorityClassName: train
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: worker-0
+  namespace: runai-team-a
+  labels:
+    kai.scheduler/preemptibility: preemptible
+  annotations:
+    pod-group-name: trainers        # joins the gang
+    gpu-fraction: "0.6"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: worker-1
+  namespace: runai-team-a
+  labels:
+    kai.scheduler/preemptibility: preemptible
+  annotations:
+    pod-group-name: trainers
+    gpu-fraction: "0.6"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]

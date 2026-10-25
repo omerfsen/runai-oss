@@ -1,0 +1,17 @@
+# Half a GPU. Note: NO nvidia.com/gpu request. The annotation alone asks
+# Run:ai for a fraction; mixing the two is not how fractions are requested.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: half-gpu
+  namespace: runai-team-a
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c]
+      args:
+        - nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; sleep 3600

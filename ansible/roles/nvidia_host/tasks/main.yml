@@ -1,0 +1,125 @@
+---
+# Host driver from Canonical's signed modules. A DKMS-built module is signed
+# with a local MOK key; if the firmware's key list is ever reset, Secure Boot
+# rejects it ("Loading of module with unavailable key is rejected") and the
+# GPU silently disappears. Canonical's key is always trusted.
+
+- name: Fail on anything but Ubuntu
+  ansible.builtin.assert:
+    that: ansible_facts['distribution'] == 'Ubuntu'
+    fail_msg: This role uses Ubuntu's signed NVIDIA module packages.
+
+- name: Find DKMS-built NVIDIA driver packages
+  ansible.builtin.shell: |
+    set -o pipefail
+    dpkg-query -W -f='${Package} ${Status}\n' 'nvidia-dkms-*' 'nvidia-driver-*' 2>/dev/null \
+      | awk '$NF == "installed" {print $1}'
+  args: {executable: /bin/bash}
+  register: dkms_pkgs
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# They conflict with the signed modules (nvidia-driver-* hard-depends on DKMS).
+- name: Remove them
+  ansible.builtin.apt:
+    name: "{{ dkms_pkgs.stdout_lines }}"
+    state: absent
+  when: dkms_pkgs.stdout_lines | length > 0
+
+# linux-generic keeps the kernel, linux-modules-extra and the signed NVIDIA
+# modules on one version. The signed modules only exist for the newest kernel;
+# pulled in alone, that kernel boots without modules-extra: no r8169 NIC
+# driver (no network) and nvidia_drm fails on missing drm_display_helper.
+- name: Install the kernel metapackage and the signed driver
+  ansible.builtin.apt:
+    name:
+      - linux-generic
+      - "linux-modules-nvidia-{{ nvidia_driver_branch }}-open-generic"
+      - "nvidia-headless-no-dkms-{{ nvidia_driver_branch }}-open"
+      - "nvidia-utils-{{ nvidia_driver_branch }}"
+    state: present
+    update_cache: true
+  register: driver_pkgs
+
+- name: Add NVIDIA's container toolkit signing key
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /etc/apt/keyrings/nvidia-container-toolkit.asc
+    mode: "0644"
+
+- name: Add NVIDIA's container toolkit repo
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    mode: "0644"
+    content: |
+      deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.asc] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /
+
+- name: Install the pinned container toolkit
+  ansible.builtin.apt:
+    name:
+      - "nvidia-container-toolkit={{ nvidia_ctk_version }}"
+      - "nvidia-container-toolkit-base={{ nvidia_ctk_version }}"
+      - "libnvidia-container-tools={{ nvidia_ctk_version }}"
+      - "libnvidia-container1={{ nvidia_ctk_version }}"
+    state: present
+    update_cache: true
+
+- name: Does Docker know the nvidia runtime?
+  ansible.builtin.command: grep -q nvidia-container-runtime /etc/docker/daemon.json
+  register: docker_runtime
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Register the nvidia runtime with Docker
+  ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+  when: docker_runtime.rc != 0
+  changed_when: true
+
+# A restart stops running containers, k3d nodes included; only when needed.
+- name: Restart Docker to load it
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: docker_runtime.rc != 0 and not ansible_check_mode
+
+# ── Gate: the driver must be loaded and signed by Canonical ──────────────
+- name: Is the NVIDIA driver loaded?
+  ansible.builtin.stat:
+    path: /proc/driver/nvidia/version
+  register: driver_loaded
+
+- name: Stop here until the host has rebooted onto the new driver
+  ansible.builtin.assert:
+    that: driver_loaded.stat.exists
+    fail_msg: >-
+      The NVIDIA driver is not loaded. {{ 'Packages just changed: this is the
+      expected first-run stop. ' if driver_pkgs.changed else '' }}REBOOT, then
+      run host.yml again. If it still fails after a reboot, check
+      `journalctl -k -b | grep -i -e nvidia -e reject` and `uname -r` (the
+      signed modules only exist for the newest kernel).
+  when: not ansible_check_mode
+
+- name: Read the module signer
+  ansible.builtin.command: modinfo -F signer nvidia
+  register: signer
+  changed_when: false
+  check_mode: false
+
+- name: Confirm Canonical signed it
+  ansible.builtin.assert:
+    that: "'Canonical' in signer.stdout"
+    fail_msg: "nvidia.ko is signed by '{{ signer.stdout }}', expected Canonical"
+
+- name: Check the GPU from a CUDA container
+  ansible.builtin.command: >-
+    docker run --rm --gpus all nvcr.io/nvidia/cuda:{{ cuda_tag }}
+    nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+  register: cuda_check
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "GPU in a container: {{ cuda_check.stdout | default('skipped in check mode') }}"

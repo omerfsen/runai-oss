@@ -1,0 +1,33 @@
+# Setup: team-b fills its half with a non-preemptible pod, so team-a has only
+# its own 0.5 GPU. team-a runs a low-priority job in it; then a high-priority
+# job arrives in the same project and takes the place.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: blocker
+  namespace: runai-team-b
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "sleep 3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: low-prio
+  namespace: runai-team-a
+  labels:
+    kai.scheduler/preemptibility: preemptible
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  priorityClassName: train            # 50
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "sleep 3600"]

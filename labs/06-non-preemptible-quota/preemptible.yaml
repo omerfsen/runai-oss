@@ -1,0 +1,17 @@
+# The same half-GPU pod, marked preemptible: it may borrow the idle half above
+# team-b's quota, accepting that Run:ai can take it back later (Lab 07).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p-second
+  namespace: runai-team-b
+  labels:
+    kai.scheduler/preemptibility: preemptible
+  annotations:
+    gpu-fraction: "0.5"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda
+      image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
+      command: [bash, -c, "nvidia-smi -L; sleep 3600"]

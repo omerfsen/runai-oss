@@ -1,0 +1,95 @@
+---
+# One k3d cluster, ports 80/443 on the host's LAN address. Traefik (bundled
+# with k3s) is the ingress controller; every add-on uses plain `kind: Ingress`.
+
+- name: Work out the host address
+  ansible.builtin.include_tasks: host_ip.yml
+
+- name: Does the cluster exist?
+  ansible.builtin.command: k3d cluster get {{ cluster_name }}
+  register: cluster_get
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Create the cluster
+  when: cluster_get.rc != 0
+  block:
+    - name: Write the registry mirror config
+      ansible.builtin.copy:
+        dest: /tmp/k3d-{{ cluster_name }}-registries.yaml
+        mode: "0600"
+        content: |
+          mirrors:
+            docker.io:
+              endpoint: ["{{ registry_mirror }}"]
+          configs:
+            "{{ registry_mirror }}":
+              tls:
+                insecure_skip_verify: true
+      when: registry_mirror | length > 0
+
+    # nvidia as containerd's default runtime: without it pods get the GPU
+    # allocated but run under runc, with no driver inside ("nvidia-smi:
+    # command not found"), unless they set runtimeClassName: nvidia. Run:ai's
+    # workloads don't.
+    # registry-qps=0 lifts kubelet's 5 pulls/s limit: Run:ai's control plane
+    # starts ~40 pods at once and otherwise hits "pull QPS exceeded".
+    - name: k3d cluster create {{ cluster_name }}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['k3d', 'cluster', 'create', cluster_name,
+              '--image', node_image if gpus | string != '0' else 'rancher/k3s:' ~ k3s_version,
+              '-p', cluster_ip ~ ':80:80@loadbalancer',
+              '-p', cluster_ip ~ ':443:443@loadbalancer',
+              '--k3s-arg', '--kubelet-arg=registry-qps=0@server:*']
+             + (['--gpus', gpus | string, '--k3s-arg', '--default-runtime=nvidia@server:*']
+                if gpus | string != '0' else [])
+             + (['--registry-config', '/tmp/k3d-' ~ cluster_name ~ '-registries.yaml']
+                if registry_mirror | length > 0 else []) }}
+      changed_when: true
+
+  always:
+    - name: Remove the registry mirror config
+      ansible.builtin.file:
+        path: /tmp/k3d-{{ cluster_name }}-registries.yaml
+        state: absent
+
+- name: Override the node's DNS resolver
+  ansible.builtin.command: >-
+    docker exec k3d-{{ cluster_name }}-server-0 sh -c
+    "grep -qx 'nameserver {{ node_dns }}' /etc/resolv.conf && echo unchanged
+    || { echo 'nameserver {{ node_dns }}' > /etc/resolv.conf; echo written; }"
+  register: node_dns_set
+  when: node_dns | length > 0 and not ansible_check_mode
+  changed_when: "'written' in node_dns_set.stdout"
+
+- name: Wait for Traefik's IngressClass
+  ansible.builtin.command: kubectl --context k3d-{{ cluster_name }} get ingressclass traefik -o json
+  register: ingressclass
+  until: ingressclass.rc == 0
+  retries: 60
+  delay: 3
+  changed_when: false
+  when: not ansible_check_mode
+
+# A k3s started with --disable=traefik has no ingress controller at all.
+- name: Confirm traefik is the default IngressClass
+  ansible.builtin.assert:
+    that: >-
+      (ingressclass.stdout | from_json).metadata.annotations['ingressclass.kubernetes.io/is-default-class']
+      | default('false') == 'true'
+    fail_msg: IngressClass traefik exists but is not the default; set ingressClassName explicitly everywhere.
+  when: not ansible_check_mode
+
+- name: Wait for Traefik to be ready
+  ansible.builtin.command: >-
+    kubectl --context k3d-{{ cluster_name }} -n kube-system rollout status deploy/traefik --timeout=180s
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      Cluster {{ cluster_name }} (k3s {{ k3s_version }}{{ ', ' ~ gpus ~ ' GPU' if gpus | string != '0' else '' }})
+      on {{ cluster_ip }}:80/443, kubectl context k3d-{{ cluster_name }}.

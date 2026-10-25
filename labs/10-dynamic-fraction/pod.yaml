@@ -1,0 +1,32 @@
+# Guaranteed 4 GB, may burst to 8 GB while the card has room.
+# Use NVIDIA's request/limit annotations (per container, here "torch").
+# Do NOT mix them with gpu-fraction/gpu-memory: on 3.0.20 the admission
+# webhook rejects that ("cannot combine nvidia.com/container. limit
+# annotation with gpu-fraction or gpu-memory annotation"), although the docs
+# suggest pairing kai.scheduler/...portion.limit with gpu-fraction.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: burst
+  namespace: runai-team-a
+  annotations:
+    nvidia.com/container.torch.gpu-memory.request: "4G"
+    nvidia.com/container.torch.gpu-memory.limit: "8G"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: torch
+      image: pytorch/pytorch:2.14.1-cuda13.2-cudnn9-runtime
+      command: [python3, -c]
+      args:
+        - |
+          import torch
+          free, total = torch.cuda.mem_get_info()
+          print(f"visible GPU memory: {total / 2**30:.1f} GiB")
+          for gib in (3, 6, 10):
+              try:
+                  x = torch.empty(int(gib * 2**30), dtype=torch.uint8, device="cuda")
+                  print(f"allocate {gib} GiB: OK")
+                  del x; torch.cuda.empty_cache()
+              except torch.OutOfMemoryError:
+                  print(f"allocate {gib} GiB: CUDA out of memory")
