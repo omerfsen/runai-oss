@@ -795,6 +795,35 @@ Checked without putting the password on a command line: Cockpit's
 `/cockpit/login` with curl reading `-K -` from stdin (200 on both VMs), and
 SSH with `SSH_ASKPASS` reading the file.
 
+## Step 25: The VM track becomes the main track
+
+Before calling the VM track done, the one suite never run on it: the platform
+tests. `CONTEXT=rke2-runai-cp tests/run.sh`, all 8 PASS, including
+TensorFlow (151 s) and TensorRT (91 s) on the passed-through card, and test 07
+against RKE2's `rke2-traefik` service, which had only been adjusted, never run.
+
+| Check on the VM track | Result |
+|---|---|
+| Second run of every playbook | `changed=0` |
+| `labs/run.sh`, 13 labs | all PASS |
+| `tests/run.sh`, 8 platform tests | all PASS |
+| `vm-verify.yml` (GPU node runs GPU work only) | PASS |
+
+So the README now leads with the VM track: two Rocky Linux 10.2 VMs on RKE2,
+a supported Kubernetes, separate system and GPU nodes, SELinux enforcing. k3d
+stays as the quick start: same labs, same Run:ai roles, and it is the only
+option on a machine that cannot pass a GPU to a VM. Tagged `v0.2.0`
+(`v0.1.0` is the k3d-only version).
+
+A side effect worth knowing for the article: with the GPU passed through, the
+monitor cable on the NVIDIA card shows the VM's console, and the keyboard,
+still on the host, does nothing there. The host's screen is on the
+motherboard's output (the CPU's integrated GPU). Switch the monitor's input,
+don't pass the keyboard through.
+
+Also on the k3d side: the CUDA node images moved from a private registry to
+a public Docker Hub repository, so readers can pull instead of build.
+
 ---
 
 ## Next
