@@ -21,6 +21,7 @@ metadata:
     gpu-fraction: "0.5"
 spec:
   restartPolicy: Never
+  terminationGracePeriodSeconds: 2   # sleep ignores SIGTERM: do not wait 30 s on delete
   containers:
     - name: cuda
       image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
@@ -38,6 +39,7 @@ metadata:
     gpu-fraction: "0.5"
 spec:
   restartPolicy: Never
+  terminationGracePeriodSeconds: 2   # sleep ignores SIGTERM: do not wait 30 s on delete
   containers:
     - name: cuda
       image: nvcr.io/nvidia/cuda:13.4.3-base-ubuntu24.04
