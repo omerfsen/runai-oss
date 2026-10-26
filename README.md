@@ -6,6 +6,9 @@ workstation, built step by step as training material.
 **Video course:** one narrated episode per lab, 13 in total, 5-6 minutes each:
 https://www.youtube.com/playlist?list=PLXy22_nn72SQ
 
+**The story behind it** (what the cluster taught that the docs did not):
+https://www.linkedin.com/pulse/one-gpu-thirteen-labs-building-hands-on-course-open-source-omer-sen-v993e/
+
 Two ways to build the cluster. The labs, tests and Run:ai install are the same
 on both:
 
