@@ -832,6 +832,52 @@ boolean. Off mode also turns autostart off for both VMs now, not only the GPU
 VM: without its GPU node the control-plane VM would just hold 20 vCPUs and
 40 GB of the host.
 
+## Step 26: Lab helpers that wait for the cluster
+
+Running the labs back to back, many times, on the RKE2 cluster turned up races
+between a command and Kubernetes that a single run rarely hits. `labs/lib.sh`
+now absorbs them:
+
+- `project_create` returned once the namespace and queue existed, but Run:ai's
+  admission webhook learns about a project a little later and refused pods
+  ("project team-a does not exist"), worst right after a delete. It now waits
+  until a server-side dry run of a pod passes that webhook, and
+  `project_delete` waits until the webhook has forgotten the project.
+- A lab that stopped half-way left pods holding the GPU, and the next lab timed
+  out. `lab_reset` deletes every workload in the lab namespaces.
+- `kubectl get` exits 0 on "not yet", so reading a pod right after `apply`
+  shows Pending and proves nothing. New helpers wait for the state first:
+  `wait_running` (pods with generated names, e.g. a Job's), `wait_logs` and
+  `wait_events`. Events live for hours and names repeat, so `wait_events` only
+  shows events newer than `$LAB_START` when the caller sets it.
+- The lab pods run `sleep` as PID 1, which ignores SIGTERM, so every delete
+  waited out the 30 s grace period. `terminationGracePeriodSeconds: 2` in the
+  lab manifests: lab 02 went from about 100 s to 30 s.
+
+One finding for lab 04: 4096 MiB rounds up to 26 % of the card, so next to the
+lab's first 4094 MiB pod team-a would need 0.51 GPUs of its 0.5 quota, and the
+scheduler refuses it for quota before the binding error the lab is about can
+appear. `check.sh` frees the first pod before trying 4096, and that order
+matters.
+
+## Step 27: The workstation console on the IP-KVM
+
+A host fix for the IP-KVM: Ubuntu here is text-only, and the kernel
+puts its console on framebuffer 0. That is the RTX 4080 in normal mode, and
+the card's dark firmware framebuffer while it is passed through, so the KVM on
+the motherboard HDMI (framebuffer 1, `amdgpu`) never got a login prompt in
+either mode. `con2fbmap` (package `fbset`) moved the consoles over live. The
+first permanent attempt, `fbcon=map:1` on the kernel command line, held for
+one boot only: in passthrough mode no firmware framebuffer is registered and
+the motherboard GPU becomes fb0, so `map:1` pointed at nothing and the KVM
+went dark again. The number depends on the mode, so the fix finds the
+framebuffer by name: a small boot service maps tty1-6 to whichever `fbN` is
+called `amdgpudrmfb`. The cleaner fix is in the firmware: make the integrated
+GPU the primary display, which also stops the passed-through card from being
+the boot VGA. While there: GRUB waits 5 s before booting Ubuntu, except after
+an unclean shutdown, when Ubuntu's recordfail logic waits 30 s;
+`GRUB_RECORDFAIL_TIMEOUT=5` makes it 5 s always.
+
 ---
 
 ## Next

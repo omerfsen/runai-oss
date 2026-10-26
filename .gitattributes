@@ -1,0 +1,7 @@
+# Shell scripts and manifests must keep LF: a CRLF check.sh fails under bash on
+# the cluster host, and an edit on Windows is enough to introduce one.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
