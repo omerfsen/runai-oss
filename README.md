@@ -3,6 +3,9 @@
 Open-source NVIDIA Run:ai (control plane + GPU cluster) on a single
 workstation, built step by step as training material.
 
+**Video course:** one narrated episode per lab, 13 in total, 5-6 minutes each:
+https://www.youtube.com/playlist?list=PLXy22_nn72SQ
+
 Two ways to build the cluster. The labs, tests and Run:ai install are the same
 on both:
 
